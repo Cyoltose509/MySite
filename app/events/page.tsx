@@ -40,7 +40,8 @@ export default function EventsPage() {
       .from('event_groups')
       .select('*')
       .order('sort_order', { ascending: true });
-    setGroups(gData || []);
+    // 只显示非隐私组（is_private 字段可能不存在于旧数据库，需先运行 migration-v4.sql）
+    setGroups((gData || []).filter(g => !g.is_private));
 
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - range);
