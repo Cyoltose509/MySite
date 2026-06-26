@@ -1,106 +1,214 @@
 /**
- * Netease Cloud Music sync module
- * Fetches playlist data from Netease API
- * and syncs to Supabase
+ * Netease Cloud Music sync module v3
+ * Strategy:
+ *   1. GET /api/v6/playlist/detail → get trackIds (full list)
+ *   2. POST /api/song/detail (batch) → get track metadata
+ *   3. Write to Supabase via RPC
+ *
+ * Browser: uses CORS proxy fallbacks
+ * CLI (scripts/sync-music.mjs): direct request, no proxy needed
  */
 
-const NETEASE_API = 'https://music.163.com/api';
+const PLAYLIST_ID = '7611680006';
+const NETEASE_BASE = 'https://music.163.com';
 
 export interface NeteaseTrack {
   id: string;
   name: string;
-  artists: { name: string }[];
-  playCount?: number;
+  artist: string;
+  album: string;
+  duration: number;
 }
 
 export interface PlaylistData {
+  name: string;
   tracks: NeteaseTrack[];
+  total: number;
+}
+
+export type ProgressCallback = (progress: {
+  phase: 'fetching' | 'syncing' | 'done';
+  current: number;
+  total: number;
+  message: string;
+}) => void;
+
+/**
+ * Fetch all trackIds from playlist, then batch-fetch details
+ */
+export async function fetchNeteasePlaylist(
+  _passwordHash?: string,
+  onProgress?: ProgressCallback
+): Promise<PlaylistData> {
+  onProgress?.({ phase: 'fetching', current: 0, total: 0, message: '正在获取歌单信息...' });
+
+  // Step 1: Get playlist + trackIds
+  const playlistResp = await neteaseFetch(
+    `${NETEASE_BASE}/api/v6/playlist/detail?id=${PLAYLIST_ID}&n=0`
+  );
+  const playlistJson = await playlistResp.json();
+
+  if (playlistJson.code !== 200 || !playlistJson.playlist) {
+    throw new Error(`歌单获取失败: ${playlistJson.code} ${playlistJson.msg || ''}`);
+  }
+
+  const playlistName: string = playlistJson.playlist.name || '';
+  const trackIds: number[] = (playlistJson.playlist.trackIds || []).map(
+    (t: any) => t.id
+  );
+
+  if (trackIds.length === 0) {
+    throw new Error('歌单中没有歌曲');
+  }
+
+  onProgress?.({
+    phase: 'fetching',
+    current: 0,
+    total: trackIds.length,
+    message: `歌单「${playlistName}」共 ${trackIds.length} 首，开始获取详情...`,
+  });
+
+  // Step 2: Batch fetch song details (50 per batch)
+  const BATCH = 50;
+  const tracks: NeteaseTrack[] = [];
+
+  for (let i = 0; i < trackIds.length; i += BATCH) {
+    const batchIds = trackIds.slice(i, i + BATCH);
+    const idsParam = '[' + batchIds.join(',') + ']';
+
+    const detailResp = await neteaseFetch(
+      `${NETEASE_BASE}/api/song/detail?ids=${idsParam}`
+    );
+    const detailJson = await detailResp.json();
+
+    if (detailJson.code === 200 && detailJson.songs) {
+      for (const s of detailJson.songs) {
+        tracks.push({
+          id: String(s.id),
+          name: s.name || '',
+          artist: s.artists?.[0]?.name || s.ar?.[0]?.name || 'Unknown',
+          album: s.album?.name || s.al?.name || '',
+          duration: (s.duration || s.dt || 0) > 1000
+            ? Math.floor((s.duration || s.dt) / 1000)
+            : (s.duration || s.dt || 0),
+        });
+      }
+    }
+
+    onProgress?.({
+      phase: 'fetching',
+      current: Math.min(i + BATCH, trackIds.length),
+      total: trackIds.length,
+      message: `获取详情: ${Math.min(i + BATCH, trackIds.length)}/${trackIds.length}`,
+    });
+  }
+
+  onProgress?.({
+    phase: 'done',
+    current: tracks.length,
+    total: trackIds.length,
+    message: `✅ 获取到 ${tracks.length} 首歌曲`,
+  });
+
+  return { name: playlistName, tracks, total: tracks.length };
 }
 
 /**
- * Fetch playlist from Netease Cloud Music
- * Playlist ID: 7611680006
+ * Fetch with CORS proxy fallback for browser, direct for CLI
  */
-export async function fetchNeteasePlaylist(): Promise<PlaylistData> {
-  const playlistId = '7611680006';
+async function neteaseFetch(url: string): Promise<Response> {
+  // Try direct first (works in Node CLI, may work in some browsers)
+  try {
+    const resp = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        Referer: NETEASE_BASE,
+      },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (resp.ok) return resp;
+    throw new Error(`HTTP ${resp.status}`);
+  } catch {
+    // Browser CORS fallback: use public proxy
+  }
 
-  // Try multiple API endpoints (CORS proxies)
-  const endpoints = [
-    `https://music.163.com/api/playlist/detail?id=${playlistId}`,
-    `https://netease-cloud-music-api-five.vercel.app/playlist/detail?id=${playlistId}`,
+  // CORS proxy fallbacks for browser
+  const proxies = [
+    (u: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+    (u: string) => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
   ];
 
-  let lastError: Error | null = null;
-
-  for (const url of endpoints) {
+  for (const proxy of proxies) {
     try {
-      const resp = await fetch(url, {
-        headers: {
-          'Content-Type': 'application/json',
-        },
+      const resp = await fetch(proxy(url), {
+        signal: AbortSignal.timeout(15000),
       });
-
-      if (resp.ok) {
-        const json = await resp.json();
-        if (json.code === 200 || json.playlist) {
-          const tracks = json.playlist?.tracks || json.result?.tracks || [];
-          return {
-            tracks: tracks.map((t: any) => ({
-              id: String(t.id),
-              name: t.name,
-              artists: t.ar || t.artists || [],
-            })),
-          };
-        }
-      }
-    } catch (err: any) {
-      lastError = err;
+      if (resp.ok) return resp;
+    } catch {
+      // try next proxy
     }
   }
 
-  // Fallback: return mock data for development
-  if (process.env.NEXT_PUBLIC_DEV_MODE === 'true') {
-    return {
-      tracks: [
-        { id: 'mock1', name: 'Mock Song 1', artists: [{ name: 'Mock Artist' }] },
-        { id: 'mock2', name: 'Mock Song 2', artists: [{ name: 'Mock Artist' }] },
-      ],
-    };
-  }
-
-  throw lastError || new Error('无法获取网易云歌单数据');
+  throw new Error(
+    '网易云请求失败：浏览器 CORS 限制。请使用命令行同步：npm run sync:music'
+  );
 }
 
 /**
  * Sync music data to Supabase
  */
-export async function syncNeteasePlaylist(
-  passwordHash?: string
+export async function syncNeteaseToSupabase(
+  data: PlaylistData,
+  passwordHash: string,
+  onProgress?: ProgressCallback
 ): Promise<{ count: number }> {
-  const data = await fetchNeteasePlaylist();
-
-  if (!passwordHash) {
-    // Return data without syncing (for preview)
-    return { count: data.tracks.length };
-  }
-
-  const musicData = data.tracks.map((track) => ({
-    title: track.name,
-    artist: track.artists.map((a: any) => a.name).join(', '),
-    netease_id: track.id,
-    play_count: 0,
-  }));
-
   const { supabase } = require('@/lib/supabase');
 
-  const { data: result, error } = await supabase.rpc('fn_sync_music', {
-    p_hash: passwordHash,
-    p_data: JSON.stringify(musicData),
+  onProgress?.({
+    phase: 'syncing',
+    current: 0,
+    total: data.tracks.length,
+    message: '开始写入数据库...',
   });
 
-  if (error || (result && result.error)) {
-    throw new Error(error?.message || result?.error || 'Sync failed');
+  const CHUNK = 100;
+  let synced = 0;
+
+  for (let i = 0; i < data.tracks.length; i += CHUNK) {
+    const chunk = data.tracks.slice(i, i + CHUNK);
+    const musicData = chunk.map((t) => ({
+      title: t.name,
+      artist: t.artist,
+      album: t.album,
+      netease_id: t.id,
+      duration: t.duration,
+      play_count: 0,
+    }));
+
+    const { error, result } = await supabase.rpc('fn_sync_music', {
+      p_hash: passwordHash,
+      p_data: musicData,
+    });
+
+    if (error || (result && result.error)) {
+      throw new Error(error?.message || result?.error || 'Sync failed');
+    }
+
+    synced += chunk.length;
+    onProgress?.({
+      phase: 'syncing',
+      current: synced,
+      total: data.tracks.length,
+      message: `同步进度: ${synced}/${data.tracks.length}`,
+    });
   }
 
-  return { count: musicData.length };
+  onProgress?.({
+    phase: 'done',
+    current: synced,
+    total: data.tracks.length,
+    message: `✅ 同步完成！共 ${synced} 首歌曲`,
+  });
+
+  return { count: synced };
 }

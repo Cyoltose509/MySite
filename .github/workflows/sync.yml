@@ -1,0 +1,24 @@
+name: Auto Sync Data
+
+on:
+  schedule:
+    # Every day at 6:00 AM UTC (14:00 Beijing time)
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Sync Music
+        run: node scripts/sync-music.mjs
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NEXT_PUBLIC_ADMIN_PASSWORD_HASH: ${{ secrets.NEXT_PUBLIC_ADMIN_PASSWORD_HASH }}

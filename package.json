@@ -6,13 +6,17 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "export": "next build && next export"
+    "export": "next build && next export",
+    "db:init": "node scripts/init-db.mjs",
+    "sync:anime": "node scripts/sync-anime.mjs",
+    "sync:music": "node scripts/sync-music.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
     "crypto-js": "^4.2.0",
     "js-sha256": "^0.11.0",
     "next": "^14.2.0",
+    "pg": "^8.22.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
     "recharts": "^2.12.0"
