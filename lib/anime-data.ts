@@ -12,7 +12,7 @@ const CACHE_KEY = 'datahub_anime_cache';
 const CACHE_TTL = 6 * 60 * 60 * 1000; // 6 hours
 
 // Pre-built cover URLs (generated at build time by scripts/fetch-covers.mjs)
-const COVERS_JSON_PATH = '/anime-covers.json';
+const COVERS_JSON_PATH = `${process.env.NEXT_PUBLIC_BASE_PATH || ''}/anime-covers.json`;
 
 export interface AnimeItem {
   title: string;

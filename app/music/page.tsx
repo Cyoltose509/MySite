@@ -80,7 +80,7 @@ export default function MusicPage() {
     setLoading(false);
 
     try {
-      const resp = await fetch('/music-covers.json');
+      const resp = await fetch(`${process.env.NEXT_PUBLIC_BASE_PATH || ''}/music-covers.json`);
       if (resp.ok) {
         const data = await resp.json();
         const covers: Record<string, string> = {};
