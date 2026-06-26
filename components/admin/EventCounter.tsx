@@ -27,7 +27,20 @@ export function EventCounter() {
   useEffect(() => { fetchGroups(); fetchLogs(); }, []);
   useEffect(() => { fetchLogs(); }, [viewDate]);
 
+  // 通过 RPC 获取所有事件组（包括隐私的，绕过 RLS）
   const fetchGroups = async () => {
+    const hash = getSession();
+    if (!hash) { fetchGroupsPublic(); return; }
+    const { data, error } = await supabase.rpc('fn_get_event_groups_admin', { p_hash: hash });
+    if (error || !data || data.error) {
+      // fallback: 直接查（可能看不到隐私组）
+      fetchGroupsPublic();
+    } else {
+      setGroups(data);
+    }
+  };
+
+  const fetchGroupsPublic = async () => {
     const { data } = await supabase
       .from('event_groups')
       .select('*')
@@ -35,9 +48,24 @@ export function EventCounter() {
     setGroups(data || []);
   };
 
+  // 通过 RPC 获取日志（admin 视角，看到所有包括隐私组的）
   const fetchLogs = async () => {
+    const hash = getSession();
     const start = viewDate + 'T00:00:00';
     const end = viewDate + 'T23:59:59';
+
+    if (hash) {
+      const { data, error } = await supabase.rpc('fn_get_event_logs_admin', {
+        p_hash: hash,
+        p_start_date: viewDate,
+        p_end_date: viewDate,
+      });
+      if (!error && data) {
+        setLogs(data);
+        return;
+      }
+    }
+    // fallback: 直接查
     const { data } = await supabase
       .from('event_logs')
       .select('*, event_groups(name, icon, color, is_private)')
