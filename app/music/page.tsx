@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 
@@ -12,6 +12,7 @@ interface MusicRecord {
   duration?: number | null;
   netease_id?: number;
   play_count?: number | null;
+  created_at?: string;
 }
 
 interface MusicTagData {
@@ -22,21 +23,42 @@ interface MusicTagData {
   comment?: string;
 }
 
+const SORT_OPTIONS = [
+  { value: 'title',       label: '歌名 A→Z' },
+  { value: 'artist',      label: '歌手' },
+  { value: 'likability',  label: '♥ 喜欢度' },
+  { value: 'singability', label: '🎤 能唱度' },
+  { value: 'created',     label: '收藏时间' },
+] as const;
+
+type SortBy = typeof SORT_OPTIONS[number]['value'];
+
 export default function MusicPage() {
   const [musicList, setMusicList] = useState<MusicRecord[]>([]);
   const [tagsMap, setTagsMap] = useState<Record<string, MusicTagData[]>>({});
+  const [coverMap, setCoverMap] = useState<Record<string, string>>({});  // netease_id (string) → cover URL
   const [search, setSearch] = useState('');
-  const [sortBy, setSortBy] = useState<'title' | 'artist' | 'likability'>('title');
+  const [sortBy, setSortBy] = useState<SortBy>('title');
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [detailMusic, setDetailMusic] = useState<MusicRecord | null>(null);
 
   useEffect(() => { fetchMusic(); }, []);
 
   const fetchMusic = async () => {
-    const { data } = await supabase.from('music_list').select('*').limit(500);
+    const { data, error } = await supabase.from('music_list').select('*').order('created_at', { ascending: true }).limit(500);
+    if (error) {
+      setError(`加载音乐列表失败: ${error.message}`);
+      setLoading(false);
+      return;
+    }
     setMusicList(data || []);
 
-    const { data: tags } = await supabase.from('music_tags').select('*');
+    const { data: tags, error: tagsError } = await supabase.from('music_tags').select('*');
+    if (tagsError) {
+      console.warn('加载标签失败:', tagsError.message);
+    }
     if (tags) {
       const map: Record<string, MusicTagData[]> = {};
       tags.forEach((t: any) => {
@@ -46,9 +68,34 @@ export default function MusicPage() {
       setTagsMap(map);
     }
     setLoading(false);
+
+    // Load pre-built cover JSON
+    try {
+      const resp = await fetch('/music-covers.json');
+      if (resp.ok) {
+        const data = await resp.json();
+        const covers: Record<string, string> = {};
+        for (const [k, v] of Object.entries(data)) {
+          if (k !== '_timestamp' && typeof v === 'string') covers[k] = v;
+        }
+        setCoverMap(covers);
+      }
+    } catch {}
   };
 
-  useEffect(() => { fetchMusic(); }, [sortBy]);
+  // Collect all unique tags with counts
+  const allTags = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const tags of Object.values(tagsMap)) {
+      for (const t of tags) {
+        counts[t.tag] = (counts[t.tag] || 0) + 1;
+      }
+    }
+    return Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 30)
+      .map(([tag, count]) => ({ tag, count }));
+  }, [tagsMap]);
 
   // Sort: tagged items bottom, untagged top
   const sorted = [...musicList].sort((a, b) => {
@@ -61,13 +108,29 @@ export default function MusicPage() {
       const bL = tagsMap[b.id]?.[0]?.likability || 0;
       return bL - aL;
     }
+    if (sortBy === 'singability') {
+      const aS = tagsMap[a.id]?.[0]?.singability || 0;
+      const bS = tagsMap[b.id]?.[0]?.singability || 0;
+      return bS - aS;
+    }
+    if (sortBy === 'created') {
+      const aT = a.created_at || '';
+      const bT = b.created_at || '';
+      return bT.localeCompare(aT);  // newest first
+    }
     if (sortBy === 'artist') return a.artist.localeCompare(b.artist);
     return a.title.localeCompare(b.title);
   });
 
-  const filtered = search.trim()
-    ? sorted.filter(m => m.title.toLowerCase().includes(search.toLowerCase()) || m.artist.toLowerCase().includes(search.toLowerCase()))
+  // Filter by tag
+  const byTag = tagFilter
+    ? sorted.filter(m => (tagsMap[m.id] || []).some(t => t.tag === tagFilter))
     : sorted;
+
+  // Filter by search
+  const filtered = search.trim()
+    ? byTag.filter(m => m.title.toLowerCase().includes(search.toLowerCase()) || m.artist.toLowerCase().includes(search.toLowerCase()))
+    : byTag;
 
   const fmtDur = (sec: number | null) => {
     if (!sec) return '';
@@ -80,8 +143,25 @@ export default function MusicPage() {
     return <div style={S.loading}><div style={S.spinner} /><p style={S.loadingText}>加载中...</p></div>;
   }
 
+  if (error) {
+    return (
+      <div style={S.page}>
+        <header style={S.header}>
+          <Link href="/" style={S.back}>← 首页</Link>
+          <h1 style={S.h1}>🎵 音乐收藏</h1>
+        </header>
+        <div style={S.errorBox}>
+          <p style={S.errorTitle}>⚠️ 加载失败</p>
+          <p style={S.errorMsg}>{error}</p>
+          <button onClick={() => { setError(null); setLoading(true); fetchMusic(); }} style={S.retryBtn}>重试</button>
+        </div>
+      </div>
+    );
+  }
+
   const detailTags = detailMusic ? (tagsMap[detailMusic.id] || []) : [];
   const taggedCount = Object.keys(tagsMap).length;
+  const detailCover = detailMusic?.netease_id ? coverMap[String(detailMusic.netease_id)] : null;
 
   return (
     <div style={S.page}>
@@ -101,21 +181,38 @@ export default function MusicPage() {
         <div style={S.filterRow}>
           <span style={S.filterLabel}>排序</span>
           <div style={S.filterTabs}>
-            {[
-              { value: 'title' as const, label: '歌名' },
-              { value: 'artist' as const, label: '歌手' },
-              { value: 'likability' as const, label: '♥ 喜欢度' },
-            ].map((opt) => (
+            {SORT_OPTIONS.map((opt) => (
               <button key={opt.value} onClick={() => setSortBy(opt.value)}
                 style={{ ...S.filterTab, ...(sortBy === opt.value ? S.filterTabActive : {}) }}>
                 {opt.label}
               </button>
             ))}
           </div>
-          <div style={{ marginLeft: 'auto', display: 'flex', gap: 10, fontSize: 12, color: '#71717a' }}>
-            <span>已标记 {taggedCount}</span>
-            <span>未标记 {musicList.length - taggedCount}</span>
+        </div>
+
+        {/* Tag filter */}
+        {allTags.length > 0 && (
+          <div style={S.filterRow}>
+            <span style={S.filterLabel}>标签</span>
+            <div style={S.filterTabs}>
+              <button onClick={() => setTagFilter(null)}
+                style={{ ...S.filterTab, ...(tagFilter === null ? S.filterTabActive : {}) }}>
+                全部
+              </button>
+              {allTags.map(({ tag, count }) => (
+                <button key={tag} onClick={() => setTagFilter(tag)}
+                  style={{ ...S.filterTab, ...(tagFilter === tag ? S.filterTabActive : {}) }}>
+                  {tag} <span style={S.tagCount}>{count}</span>
+                </button>
+              ))}
+            </div>
           </div>
+        )}
+
+        <div style={S.statsRow}>
+          <span>已标记 {taggedCount}</span>
+          <span>未标记 {musicList.length - taggedCount}</span>
+          {tagFilter && <span style={{ color: '#818cf8' }}>筛选: {tagFilter} ({filtered.length})</span>}
         </div>
       </section>
 
@@ -126,37 +223,44 @@ export default function MusicPage() {
           const hasTags = tags.length > 0;
           const likability = tags[0]?.likability;
           const singability = tags[0]?.singability;
+          const cover = m.netease_id ? coverMap[String(m.netease_id)] : null;
 
           return (
-            <article key={m.id} style={{ ...S.card, ...(hasTags ? S.cardTagged : {}) }}
-              onClick={() => setDetailMusic(m)}>
-              <p style={{ ...S.cardTitle, ...(hasTags ? { color: '#818cf8' } : {}) }}>{m.title}</p>
-              <p style={S.cardArtist}>{m.artist}{m.album && <span style={S.cardAlbum}> · {m.album}</span>}</p>
-
-              {/* Duration */}
-              {m.duration && (
-                <span style={S.cardDuration}>{fmtDur(m.duration)}</span>
+            <article key={m.id} style={S.card} onClick={() => setDetailMusic(m)}>
+              {/* Cover as subtle background */}
+              {cover && (
+                <div style={{ ...S.cardBg, backgroundImage: `url(${cover})` }} />
               )}
+              <div style={S.cardOverlay} />
+              <div style={S.cardContent}>
+                <p style={{ ...S.cardTitle, ...(hasTags ? { color: '#818cf8' } : {}) }}>{m.title}</p>
+                <p style={S.cardArtist}>{m.artist}{m.album && <span style={S.cardAlbum}> · {m.album}</span>}</p>
 
-              {/* Badges row */}
-              <div style={S.cardBadges}>
-                {hasTags && likability && (
-                  <span style={{ ...S.badge, background: '#f8717122', color: '#f87171' }}>♥{likability}</span>
+                {/* Duration */}
+                {m.duration && (
+                  <span style={S.cardDuration}>{fmtDur(m.duration)}</span>
                 )}
-                {hasTags && singability && (
-                  <span style={{ ...S.badge, background: '#818cf822', color: '#818cf8' }}>🎤{singability}</span>
+
+                {/* Badges row */}
+                <div style={S.cardBadges}>
+                  {hasTags && likability && (
+                    <span style={{ ...S.badge, background: '#f8717122', color: '#f87171' }}>♥{likability}</span>
+                  )}
+                  {hasTags && singability && (
+                    <span style={{ ...S.badge, background: '#818cf822', color: '#818cf8' }}>🎤{singability}</span>
+                  )}
+                </div>
+
+                {/* Tags preview */}
+                {hasTags && (
+                  <div style={S.cardTags}>
+                    {tags.slice(0, 3).map(t => (
+                      <span key={t.id} style={S.cardTagChip}>{t.tag}</span>
+                    ))}
+                    {tags.length > 3 && <span style={S.cardTagMore}>+{tags.length - 3}</span>}
+                  </div>
                 )}
               </div>
-
-              {/* Tags preview */}
-              {hasTags && (
-                <div style={S.cardTags}>
-                  {tags.slice(0, 3).map(t => (
-                    <span key={t.id} style={S.cardTagChip}>{t.tag}</span>
-                  ))}
-                  {tags.length > 3 && <span style={S.cardTagMore}>+{tags.length - 3}</span>}
-                </div>
-              )}
             </article>
           );
         })}
@@ -170,15 +274,30 @@ export default function MusicPage() {
           <div style={S.modal} onClick={(e) => e.stopPropagation()}>
             <button style={S.modalClose} onClick={() => setDetailMusic(null)}>✕</button>
 
-            <h2 style={S.modalTitle}>{detailMusic.title}</h2>
-            <p style={S.modalArtist}>{detailMusic.artist}{detailMusic.album && ` · ${detailMusic.album}`}</p>
-            <div style={S.modalMeta}>
-              <span>{fmtDur(detailMusic.duration ?? null)}</span>
-              <span style={S.modalSource}>来源：网易云音乐</span>
-              {detailMusic.netease_id && (
-                <a href={`https://music.163.com/#/song?id=${detailMusic.netease_id}`} target="_blank"
-                  style={S.modalLink}>🔗 网易云链接</a>
+            {/* Cover + Title header */}
+            <div style={S.modalHeaderRow}>
+              {detailCover ? (
+                <div style={S.modalCoverWrap}>
+                  <img src={detailCover} alt={detailMusic.title} style={S.modalCoverImg}
+                    onError={(e) => { (e.target as HTMLImageElement).parentElement!.style.display = 'none'; }} />
+                </div>
+              ) : (
+                <div style={S.modalCoverPlaceholder}>
+                  <span>{detailMusic.title.slice(0, 2)}</span>
+                </div>
               )}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <h2 style={S.modalTitle}>{detailMusic.title}</h2>
+                <p style={S.modalArtist}>{detailMusic.artist}{detailMusic.album && ` · ${detailMusic.album}`}</p>
+                <div style={S.modalMeta}>
+                  <span>{fmtDur(detailMusic.duration ?? null)}</span>
+                  <span style={S.modalSource}>来源：网易云音乐</span>
+                  {detailMusic.netease_id && (
+                    <a href={`https://music.163.com/#/song?id=${detailMusic.netease_id}`} target="_blank"
+                      style={S.modalLink}>🔗 网易云链接</a>
+                  )}
+                </div>
+              </div>
             </div>
 
             {detailTags.length > 0 ? (
@@ -242,45 +361,77 @@ S.search = {
   border: '1px solid #1e1e32', background: '#121224', color: '#e4e4e7',
   fontSize: 14, outline: 'none', boxSizing: 'border-box', marginBottom: 12,
 };
-S.filterRow = { display: 'flex', alignItems: 'center', gap: 8 };
+S.filterRow = { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 };
 S.filterLabel = { fontSize: 12, color: '#52525b', fontWeight: 600 };
-S.filterTabs = { display: 'flex', gap: 6 };
+S.filterTabs = { display: 'flex', gap: 6, flexWrap: 'wrap' };
 S.filterTab = { padding: '5px 12px', borderRadius: 20, border: '1px solid #27273d', background: 'transparent', color: '#a1a1aa', cursor: 'pointer', fontSize: 11 };
 S.filterTabActive = { background: '#16162a', color: '#fff', borderColor: '#6366f1' };
+S.tagCount = { fontSize: 10, color: '#71717a', marginLeft: 2 };
+S.statsRow = { display: 'flex', gap: 10, fontSize: 12, color: '#71717a', marginTop: 4 };
 
 // Grid: multiple columns
-S.grid = { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 };
+S.grid = { display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10 };
 
-// Card
+// Card with cover background
 S.card = {
-  padding: '12px 14px', borderRadius: 12, border: '1px solid #1e1e32',
-  background: '#121224', cursor: 'pointer', transition: 'transform 0.15s, border-color 0.15s',
-  display: 'flex', flexDirection: 'column', gap: 4,
+  position: 'relative', overflow: 'hidden', borderRadius: 12, cursor: 'pointer',
+  transition: 'transform 0.15s, box-shadow 0.15s',
+  border: '3px solid #1e1e32', minHeight: 120,
 };
-S.cardTagged = { background: '#0d0d1a', border: '1px solid #2a2a40' };
+
+S.cardBg = {
+  position: 'absolute', inset: 0, backgroundSize: 'cover', backgroundPosition: 'center',
+  filter: 'brightness(1) saturate(1)', transform: 'scale(1)', zIndex: 0,
+};
+
+S.cardOverlay = {
+  position: 'absolute', inset: 0, zIndex: 1,
+  background: 'linear-gradient(135deg, rgba(18,18,36,1) 0%, rgba(10,10,20,0.3) 100%)',
+};
+
+S.cardContent = {
+  position: 'relative', zIndex: 2, padding: '10px 12px',
+  display: 'flex', flexDirection: 'column', gap: 3,
+};
+
 S.cardTitle = { fontSize: 13, fontWeight: 600, color: '#e4e4e7', margin: 0, lineHeight: 1.3 };
-S.cardArtist = { fontSize: 12, color: '#a1a1aa', margin: 0 };
+S.cardArtist = { fontSize: 11, color: '#a1a1aa', margin: 0 };
 S.cardAlbum = { color: '#52525b' };
 S.cardDuration = { fontSize: 10, color: '#71717a' };
 S.cardBadges = { display: 'flex', gap: 4 };
 S.badge = { fontSize: 10, padding: '2px 6px', borderRadius: 12, fontWeight: 500 };
 S.cardTags = { display: 'flex', gap: 3, flexWrap: 'wrap' };
-S.cardTagChip = { fontSize: 9, padding: '1px 6px', borderRadius: 10, background: '#27273d', color: '#a1a1aa' };
+S.cardTagChip = { fontSize: 9, padding: '1px 6px', borderRadius: 10, background: 'rgba(30,30,50,0.7)', color: '#a1a1aa' };
 S.cardTagMore = { fontSize: 9, color: '#71717a' };
 S.empty = { textAlign: 'center', color: '#52525b', fontSize: 13, padding: 48 };
+S.errorBox = { background: '#1e0a0a', border: '1px solid #7f1d1d', borderRadius: 12, padding: 24, marginTop: 24 };
+S.errorTitle = { fontSize: 16, color: '#f87171', fontWeight: 700, margin: '0 0 8px' };
+S.errorMsg = { fontSize: 13, color: '#d4d4d8', margin: '0 0 16px', lineHeight: 1.6 };
+S.retryBtn = { padding: '8px 20px', borderRadius: 8, border: '1px solid #6366f1', background: 'transparent', color: '#818cf8', cursor: 'pointer', fontSize: 13 };
 
 // Detail Modal — generous layout
 S.modalOverlay = { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 999 };
 S.modal = {
   background: '#16162a', border: '1px solid #2a2a40', borderRadius: 24, padding: 36,
-  maxWidth: 620, width: '92%', maxHeight: '85vh', overflowY: 'auto', position: 'relative',
+  maxWidth: 640, width: '92%', maxHeight: '85vh', overflowY: 'auto', position: 'relative',
 };
 S.modalClose = { position: 'absolute', top: 20, right: 24, background: 'none', border: 'none', color: '#71717a', fontSize: 22, cursor: 'pointer' };
-S.modalTitle = { fontSize: 24, fontWeight: 800, color: '#fff', margin: 0 };
-S.modalArtist = { fontSize: 15, color: '#a1a1aa', margin: '4px 0 16px' };
-S.modalMeta = { display: 'flex', gap: 16, fontSize: 13, color: '#52525b', marginBottom: 20 };
+
+// Modal: Cover + Title header row
+S.modalHeaderRow = { display: 'flex', gap: 20, marginBottom: 20 };
+S.modalCoverWrap = { width: 160, height: 160, borderRadius: 14, overflow: 'hidden', background: '#0a0a14', flexShrink: 0 };
+S.modalCoverImg = { width: '100%', height: '100%', objectFit: 'cover' };
+S.modalCoverPlaceholder = {
+  width: 160, height: 160, borderRadius: 14, background: '#1e1e32',
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+  fontSize: 36, color: '#52525b', fontWeight: 700, flexShrink: 0,
+};
+S.modalTitle = { fontSize: 22, fontWeight: 800, color: '#fff', margin: '0 0 6px' };
+S.modalArtist = { fontSize: 14, color: '#a1a1aa', margin: '4px 0 8px' };
+S.modalMeta = { display: 'flex', gap: 12, fontSize: 13, color: '#52525b' };
 S.modalSource = { color: '#71717a', fontSize: 12 };
 S.modalLink = { color: '#818cf8', textDecoration: 'none', fontSize: 13 };
+
 S.detailSection = {};
 S.scoreRow = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 20 };
 S.scoreBox = {};
