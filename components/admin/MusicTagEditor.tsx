@@ -3,23 +3,21 @@
 import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { getSession } from '@/lib/auth';
-import { PRESET_TAGS } from '@/lib/types';
+import {
+  C, cardGridStyle, cardStyle, cardBgStyle, cardOverlayStyle,
+  cardContentStyle, cardTitleStyle, cardArtistStyle, cardAlbumStyle,
+  badgeStyle, tagChipStyle, emptyStyle,
+  headerStyle, backLinkStyle, h1Style, countBadgeStyle,
+  filterRowStyle, filterLabelStyle,
+  searchInputStyle, loadingContainerStyle, spinnerStyle, loadingTextStyle,
+} from '@/lib/card-styles';
+import type { MusicTag } from '@/lib/types';
 
 interface MusicItem {
   id: string;
   title: string;
   artist: string;
   album?: string;
-  play_count?: number;
-}
-
-interface MusicTag {
-  id: string;
-  music_id: string;
-  tag: string;
-  likability?: number;
-  singability?: number;
-  comment?: string;
 }
 
 export function MusicTagEditor() {
@@ -39,7 +37,7 @@ export function MusicTagEditor() {
   // UI states
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ text: string; type: 'ok' | 'err' } | null>(null);
-  const [editingTagId, setEditingTagId] = useState<string | null>(null);
+  const [showEditor, setShowEditor] = useState(false);
 
   useEffect(() => { fetchData(); }, []);
 
@@ -49,7 +47,6 @@ export function MusicTagEditor() {
       .select('*')
       .order('title', { ascending: true })
       .limit(500);
-
     setMusicList(music || []);
 
     const { data: tags } = await supabase.from('music_tags').select('*');
@@ -63,40 +60,35 @@ export function MusicTagEditor() {
     }
   };
 
-  // Sort: un-tagged first, tagged items to bottom
+  // Sort: un-tagged first, then tagged
   const sortedList = useMemo(() => {
     const q = search.toLowerCase();
     const filtered = search.trim()
       ? musicList.filter(m => m.title.toLowerCase().includes(q) || m.artist.toLowerCase().includes(q))
       : musicList;
-    // Untagged items first, tagged items to bottom
     return [...filtered.filter(m => !tagsMap[m.id]?.length), ...filtered.filter(m => tagsMap[m.id]?.length > 0)];
   }, [musicList, search, tagsMap]);
 
   const currentTags = selectedId ? (tagsMap[selectedId] || []) : [];
   const hasExistingTags = currentTags.length > 0;
 
-  const handleSelectMusic = (m: MusicItem) => {
+  const handleSelect = (m: MusicItem) => {
     setSelectedId(m.id);
     setSelectedMusic(m);
-    // If already tagged, load existing values into form
     if (tagsMap[m.id]?.length > 0) {
       const existing = tagsMap[m.id][0];
-      setEditingTagId(existing.id);
       setSelectedTags(currentTags.map(t => t.tag));
       setLikability(existing.likability || 5);
       setSingability(existing.singability || 5);
       setComment(existing.comment || '');
-      setTagInput('');
     } else {
-      setTagInput('');
       setSelectedTags([]);
       setLikability(5);
       setSingability(5);
       setComment('');
-      setEditingTagId(null);
     }
     setMessage(null);
+    setShowEditor(true);
   };
 
   const togglePresetTag = (tag: string) => {
@@ -114,7 +106,6 @@ export function MusicTagEditor() {
 
   const handleSave = async () => {
     if (!selectedId) { setMessage({ text: '请先选择一首音乐', type: 'err' }); return; }
-
     const finalTags = [...new Set([...selectedTags].filter(Boolean))];
     if (finalTags.length === 0) { setMessage({ text: '至少需要一个标签', type: 'err' }); return; }
 
@@ -122,16 +113,17 @@ export function MusicTagEditor() {
     const hash = getSession() || '';
 
     try {
-      // Delete existing tags first (to replace them all)
+      // Delete existing tags first
       if (hasExistingTags) {
         for (const t of currentTags) {
-          await supabase.rpc('fn_delete_music_tag', { p_hash: hash, p_tag_id: t.id });
+          const res = await supabase.rpc('fn_delete_music_tag', { p_hash: hash, p_tag_id: t.id });
+          if (res.data?.error) { setMessage({ text: `❌ 删除失败: ${res.data.error}`, type: 'err' }); setLoading(false); return; }
         }
       }
 
       // Insert new tags
       for (const t of finalTags) {
-        await supabase.rpc('fn_save_music_tag', {
+        const res = await supabase.rpc('fn_save_music_tag', {
           p_hash: hash,
           p_music_id: selectedId,
           p_tag: t,
@@ -139,10 +131,11 @@ export function MusicTagEditor() {
           p_singability: singability,
           p_comment: comment || null,
         });
+        if (res.data?.error) { setMessage({ text: `❌ 保存失败: ${res.data.error}`, type: 'err' }); setLoading(false); return; }
       }
 
       setMessage({ text: `✅ 已保存 ${finalTags.length} 个标签`, type: 'ok' });
-      setEditingTagId(null);
+      setShowEditor(false);
       fetchData();
     } catch (e: any) {
       setMessage({ text: `❌ ${e.message}`, type: 'err' });
@@ -150,76 +143,110 @@ export function MusicTagEditor() {
     setLoading(false);
   };
 
-  const handleDeleteTag = async (tagId: string) => {
-    const hash = getSession() || '';
-    try {
-      await supabase.rpc('fn_delete_music_tag', { p_hash: hash, p_tag_id: tagId });
-      setMessage({ text: '标签已删除', type: 'ok' });
-      fetchData();
-    } catch {}
-  };
-
   return (
-    <div style={styles.card}>
-      <h3 style={styles.h3}>🏷 音乐标签管理</h3>
+    <div style={{ padding: 24, maxWidth: 1200, margin: '0 auto' }}>
+      {/* Header */}
+      <div style={{ ...filterRowStyle, marginBottom: 20 }}>
+        <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: C.text }}>🎵 音乐标签管理</h3>
+        <span style={{ ...countBadgeStyle, marginLeft: 8 }}>{musicList.length} 首</span>
+      </div>
 
-      {/* Search + List */}
-      <div style={styles.listSection}>
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="🔍 搜索音乐..."
-          style={styles.searchInput}
-        />
+      {message && (
+        <p style={{ fontSize: 13, color: message.type === 'ok' ? '#4ade80' : '#f87171', margin: '0 0 12px' }}>
+          {message.text}
+        </p>
+      )}
 
-        <div style={styles.musicList}>
-          {sortedList.length === 0 && <p style={styles.emptyText}>暂无数据（先同步音乐）</p>}
+      {/* Search */}
+      <input
+        value={search}
+        onChange={e => setSearch(e.target.value)}
+        placeholder="🔍 搜索音乐..."
+        style={{ ...searchInputStyle, marginBottom: 16, maxWidth: 400 }}
+      />
+
+      {/* Cards Grid */}
+      {sortedList.length === 0 ? (
+        <p style={emptyStyle}>暂无数据（先同步音乐）</p>
+      ) : (
+        <div style={cardGridStyle}>
           {sortedList.map((m) => {
             const isTagged = tagsMap[m.id]?.length > 0;
+            const isSelected = selectedId === m.id;
             return (
-              <div
+                <div
                 key={m.id}
-                onClick={() => handleSelectMusic(m)}
+                onClick={() => handleSelect(m)}
                 style={{
-                  ...styles.musicItem,
-                  ...(selectedId === m.id ? styles.musicItemSelected : {}),
-                  ...(isTagged ? styles.musicItemTagged : {}),
+                  ...cardStyle,
+                  ...(isSelected ? { borderColor: C.accent, boxShadow: `0 0 0 1px ${C.accent}` } : {}),
+                  ...(isTagged ? { opacity: 0.75 } : {}),
+                  position: 'relative' as const,
                 }}
               >
-                <div style={styles.musicInfo}>
-                  <span style={{ ...styles.musicTitle, ...(isTagged ? { color: '#818cf8' } : {}) }}>{m.title}</span>
-                  <span style={styles.musicArtist}>{m.artist}</span>
-                </div>
-                {isTagged && (
-                  <div style={styles.tagIndicator}>
-                    <span style={styles.tagBadge}>{tagsMap[m.id].length} 标签</span>
-                    {tagsMap[m.id][0].likability && <span style={styles.scoreBadge}>♥{tagsMap[m.id][0].likability}</span>}
+                {/* Subtle background */}
+                <div style={{
+                  position: 'absolute', inset: 0, borderRadius: 12,
+                  background: 'rgba(99,102,241,0.04)',
+                  zIndex: 0, pointerEvents: 'none',
+                }} />
+                <div style={{
+                  position: 'absolute', inset: 0, borderRadius: 12,
+                  background: 'linear-gradient(135deg, rgba(99,102,241,0.08), transparent 60%)',
+                  zIndex: 0, pointerEvents: 'none',
+                }} />
+
+                  <div style={cardContentStyle}>
+                  <div style={cardTitleStyle(false)}>{m.title}</div>
+                  <div style={cardArtistStyle}>{m.artist}</div>
+                  {m.album && <div style={cardAlbumStyle}>{m.album}</div>}
+
+                  {/* Tag status badge */}
+                  <div style={{ marginTop: 6, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                    {isTagged ? (
+                      <span style={badgeStyle('rgba(99,102,241,0.18)')}>
+                        已标记 {tagsMap[m.id].length} 个标签
+                      </span>
+                    ) : (
+                      <span style={badgeStyle('rgba(255,255,255,0.06)')}>
+                        未标记
+                      </span>
+                    )}
                   </div>
-                )}
+                </div>
               </div>
             );
           })}
         </div>
-      </div>
+      )}
 
-      {/* Editor Panel */}
-      {selectedMusic && (
-        <div style={styles.editorPanel}>
-          <h4 style={styles.editorTitle}>
-            编辑: {selectedMusic.title} - {selectedMusic.artist}
-          </h4>
+      {/* Editor Panel (show when a card is selected) */}
+      {showEditor && selectedMusic && (
+        <div style={editorPanelStyle}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <h4 style={{ margin: 0, fontSize: 14, color: C.text, fontWeight: 600 }}>
+              ✏️ {selectedMusic.title} - {selectedMusic.artist}
+            </h4>
+            <button onClick={() => { setShowEditor(false); setSelectedId(null); }}
+              style={{ background: 'none', border: 'none', color: '#71717a', cursor: 'pointer', fontSize: 18 }}>
+              ✕
+            </button>
+          </div>
 
           {/* Existing Tags */}
           {hasExistingTags && (
-            <div style={styles.existingTags}>
-              <p style={styles.sectionLabel}>已有标签</p>
-              <div style={styles.tagChips}>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 12, color: C.textSec, marginBottom: 6 }}>已有标签</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                 {currentTags.map((t) => (
-                  <span key={t.id} style={styles.tagChip}>
+                  <span key={t.id} style={{ ...tagChipStyle, background: '#27273d', color: C.text, fontSize: 11 }}>
                     {t.tag}
-                    {t.likability && <span style={styles.chipScore}>♥{t.likability}</span>}
-                    {t.singability && <span style={styles.chipScore}>♪{t.singability}</span>}
-                    <button onClick={() => handleDeleteTag(t.id!)} style={styles.tagDelete}>×</button>
+                    {t.likability && <span style={{ marginLeft: 4, color: '#f87171', fontSize: 10 }}>♥{t.likability}</span>}
+                    <button onClick={async () => {
+                      await supabase.rpc('fn_delete_music_tag', { p_hash: getSession() || '', p_tag_id: t.id! });
+                      setMessage({ text: '标签已删除', type: 'ok' });
+                      fetchData();
+                    }} style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: 12, marginLeft: 4 }}>×</button>
                   </span>
                 ))}
               </div>
@@ -227,182 +254,113 @@ export function MusicTagEditor() {
           )}
 
           {/* Preset Tags */}
-          <div style={styles.sectionLabel}>选择标签</div>
-          <div style={styles.presetGrid}>
-            {PRESET_TAGS.map((tag) => (
+          <div style={{ fontSize: 12, color: C.textSec, marginBottom: 6 }}>选择标签</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+            {['学习', '工作', '运动', '放松', '睡眠', '开车',
+              '悲伤', '快乐', '愤怒', '恋爱', '怀旧', '励志',
+              '电子', '摇滚', '民谣', '古典', '爵士', '流行',
+              'ACG', 'Vocaloid', '游戏BGM', '纯音乐',
+            ].map((tag) => (
               <button
                 key={tag}
                 onClick={() => togglePresetTag(tag)}
                 style={{
-                  ...styles.presetChip,
-                  ...(selectedTags.includes(tag) ? styles.presetChipActive : {}),
+                  padding: '4px 10px', borderRadius: 20, border: '1px solid',
+                  borderColor: selectedTags.includes(tag) ? C.accent : 'rgba(255,255,255,0.1)',
+                  background: selectedTags.includes(tag) ? 'rgba(99,102,241,0.15)' : 'transparent',
+                  color: selectedTags.includes(tag) ? C.accent : C.textSec,
+                  cursor: 'pointer', fontSize: 11,
                 }}
-              >
-                {tag}
-              </button>
+              >{tag}</button>
             ))}
           </div>
 
-          {/* Custom Tag Input with Add Button */}
-          <div style={styles.customTagRow}>
+          {/* Custom Tag Input */}
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
             <input
               value={tagInput}
-              onChange={(e) => setTagInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') addCustomTag(); }}
+              onChange={e => setTagInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') addCustomTag(); }}
               placeholder="输入自定义标签..."
-              style={styles.customTagInput}
+              style={{ flex: 1, ...searchInputStyle, marginBottom: 0 }}
             />
-            <button onClick={addCustomTag} style={styles.addTagBtn}>添加</button>
+            <button onClick={addCustomTag} style={{
+              padding: '6px 14px', borderRadius: 8, border: '1px solid ' + C.accent,
+              background: 'rgba(99,102,241,0.1)', color: C.accent, cursor: 'pointer', fontSize: 12,
+            }}>添加</button>
           </div>
 
           {/* Selected tags preview */}
           {selectedTags.length > 0 && (
-            <div style={styles.selectedPreview}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
               {selectedTags.map(t => (
-                <span key={t} style={styles.selectedTagChip}>
+                <span key={t} style={{ ...tagChipStyle, background: C.accent, color: '#fff', fontSize: 11 }}>
                   {t}
-                  <button onClick={() => setSelectedTags(prev => prev.filter(x => x !== t))} style={styles.tagDelete}>×</button>
+                  <button onClick={() => setSelectedTags(prev => prev.filter(x => x !== t))}
+                    style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer', fontSize: 12, marginLeft: 4 }}>×</button>
                 </span>
               ))}
             </div>
           )}
 
-          {/* Sliders Row: likability + singability (1-10) */}
-          <div style={styles.slidersRow}>
-            <div style={styles.sliderGroup}>
-              <label style={styles.sliderLabel}>喜欢度: <span style={styles.sliderValue}>{likability}/10</span></label>
-              <input type="range" min="1" max="10" value={likability}
-                onChange={(e) => setLikability(Number(e.target.value))} style={styles.range} />
-              <div style={styles.scaleMarks}>
-                {[1,2,3,4,5,6,7,8,9,10].map(n => (
-                  <span key={n} style={{ ...styles.scaleMark, ...(n === likability ? styles.scaleMarkActive : {}) }}>{n}</span>
-                ))}
-              </div>
+          {/* Sliders: likability + singability */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 12 }}>
+            <div>
+              <label style={{ fontSize: 12, color: C.textSec }}>喜欢度: <span style={{ color: C.accent, fontWeight: 600 }}>{likability}/10</span></label>
+              <input type="range" min={1} max={10} value={likability}
+                onChange={e => setLikability(Number(e.target.value))}
+                style={{ width: '100%', accentColor: C.accent, marginTop: 4 }} />
             </div>
-            <div style={styles.sliderGroup}>
-              <label style={styles.sliderLabel}>能唱度: <span style={styles.sliderValue}>{singability}/10</span></label>
-              <input type="range" min="1" max="10" value={singability}
-                onChange={(e) => setSingability(Number(e.target.value))} style={styles.range} />
-              <div style={styles.scaleMarks}>
-                {[1,2,3,4,5,6,7,8,9,10].map(n => (
-                  <span key={n} style={{ ...styles.scaleMark, ...(n === singability ? styles.scaleMarkActive : {}) }}>{n}</span>
-                ))}
-              </div>
+            <div>
+              <label style={{ fontSize: 12, color: C.textSec }}>能唱度: <span style={{ color: C.accent, fontWeight: 600 }}>{singability}/10</span></label>
+              <input type="range" min={1} max={10} value={singability}
+                onChange={e => setSingability(Number(e.target.value))}
+                style={{ width: '100%', accentColor: C.accent, marginTop: 4 }} />
             </div>
           </div>
 
-          {/* Comment textarea (larger) */}
-          <div style={styles.sectionLabel}>备注/评论</div>
+          {/* Comment */}
+          <div style={{ fontSize: 12, color: C.textSec, marginBottom: 6 }}>备注/评论</div>
           <textarea
             value={comment}
-            onChange={(e) => setComment(e.target.value)}
+            onChange={e => setComment(e.target.value)}
             placeholder="写点感想..."
-            style={styles.textarea}
-            rows={4}
+            style={{
+              width: '100%', padding: '8px 12px', borderRadius: 10,
+              border: '1px solid rgba(255,255,255,0.1)', background: C.surface,
+              color: C.text, fontSize: 13, outline: 'none',
+              resize: 'vertical', minHeight: 60, boxSizing: 'border-box',
+            }}
+            rows={3}
           />
 
           {/* Actions */}
-          <div style={styles.actionRow}>
+          <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
             <button onClick={handleSave} disabled={loading}
-              style={{ ...styles.saveBtn, opacity: loading ? 0.6 : 1 }}>
+              style={{
+                flex: 1, padding: '8px 16px', borderRadius: 10, border: 'none',
+                background: C.accent, color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                opacity: loading ? 0.6 : 1,
+              }}>
               {loading ? '保存中...' : (hasExistingTags ? '更新标签' : '保存标签')}
             </button>
+            <button onClick={() => { setShowEditor(false); setSelectedId(null); }}
+              style={{
+                padding: '8px 16px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.1)',
+                background: 'transparent', color: C.textSec, fontSize: 13, cursor: 'pointer',
+              }}>取消</button>
           </div>
-
-          {message && (
-            <p style={{ ...styles.msg, color: message.type === 'ok' ? '#4ade80' : '#f87171' }}>
-              {message.text}
-            </p>
-          )}
         </div>
       )}
-
-      {!selectedMusic && <p style={styles.hint}>← 点击左侧列表中的歌曲来编辑标签</p>}
     </div>
   );
 }
 
-const S: Record<string, React.CSSProperties> = {};
-const styles = S;
-
-S.card = { background: '#16162a', border: '1px solid #2a2a40', borderRadius: 16, padding: 24 };
-S.h3 = { fontSize: 16, fontWeight: 600, color: '#e4e4e7', margin: 0, marginBottom: 16 };
-S.listSection = { display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 340 };
-S.searchInput = {
-  width: '100%', padding: '9px 14px', borderRadius: 10, border: '1px solid #2a2a40',
-  background: '#121224', color: '#e4e4e7', fontSize: 13, outline: 'none', boxSizing: 'border-box',
+// ── Editor Panel Style ─────────────────────────────
+const editorPanelStyle: React.CSSProperties = {
+  position: 'fixed',
+  top: 0, right: 0, width: 400, maxWidth: '90vw', height: '100vh',
+  background: C.bg, borderLeft: '1px solid rgba(255,255,255,0.08)',
+  padding: 20, overflowY: 'auto', zIndex: 100,
+  boxShadow: '-4px 0 24px rgba(0,0,0,0.3)',
 };
-S.musicList = { overflowY: 'auto', maxHeight: 260 };
-S.emptyText = { textAlign: 'center', color: '#52525b', fontSize: 13, padding: 20 };
-S.musicItem = {
-  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-  padding: '8px 12px', borderRadius: 8, cursor: 'pointer',
-  background: 'transparent', transition: 'background 0.15s',
-  borderLeft: '3px solid transparent',
-};
-S.musicItemSelected = { background: '#1e1e38', borderLeftColor: '#6366f1' };
-S.musicItemTagged = { background: '#0f0f1e', opacity: 0.85 };
-S.musicInfo = { display: 'flex', flexDirection: 'column', gap: 2 };
-S.musicTitle = { fontSize: 13, color: '#e4e4e7', fontWeight: 500 };
-S.musicArtist = { fontSize: 11, color: '#71717a' };
-S.tagIndicator = { display: 'flex', gap: 6, alignItems: 'center' };
-S.tagBadge = {
-  fontSize: 11, padding: '2px 8px', borderRadius: 20, background: 'rgba(99,102,241,0.15)',
-  color: '#818cf8', whiteSpace: 'nowrap',
-};
-S.scoreBadge = { fontSize: 10, color: '#f87171', fontWeight: 600 };
-S.editorPanel = { marginTop: 16, paddingTop: 16, borderTop: '1px solid #2a2a40' };
-S.editorTitle = { fontSize: 14, color: '#d4d4d8', margin: '0 0 12px', fontWeight: 600 };
-S.existingTags = { marginBottom: 12 };
-S.sectionLabel = { fontSize: 12, color: '#a1a1aa', margin: '8px 0 6px' };
-S.tagChips = { display: 'flex', flexWrap: 'wrap', gap: 6 };
-S.tagChip = {
-  display: 'inline-flex', alignItems: 'center', gap: 4,
-  padding: '4px 10px', borderRadius: 20, background: '#27273d', fontSize: 11, color: '#d4d4d8',
-};
-S.chipScore = { fontSize: 10, color: '#818cf8' };
-S.tagDelete = {
-  background: 'none', border: 'none', color: '#f87171', cursor: 'pointer',
-  fontSize: 14, padding: 0, lineHeight: 1,
-};
-S.presetGrid = { display: 'flex', flexWrap: 'wrap', gap: 6 };
-S.presetChip = {
-  padding: '5px 12px', borderRadius: 20, border: '1px solid #2a2a40',
-  background: 'transparent', color: '#a1a1aa', cursor: 'pointer', fontSize: 12,
-  transition: 'all 0.15s',
-};
-S.presetChipActive = { borderColor: '#6366f1', background: 'rgba(99,102,241,0.15)', color: '#818cf8' };
-S.customTagRow = { display: 'flex', gap: 8, marginTop: 8 };
-S.customTagInput = {
-  flex: 1, padding: '8px 12px', borderRadius: 8, border: '1px solid #2a2a40',
-  background: '#121224', color: '#e4e4e7', fontSize: 13, outline: 'none',
-};
-S.addTagBtn = {
-  padding: '8px 16px', borderRadius: 8, border: '1px solid #6366f1',
-  background: 'rgba(99,102,241,0.15)', color: '#818cf8', cursor: 'pointer', fontSize: 13,
-};
-S.selectedPreview = { display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 };
-S.selectedTagChip = {
-  padding: '4px 10px', borderRadius: 20, background: '#6366f1', fontSize: 11, color: '#fff',
-  display: 'inline-flex', alignItems: 'center', gap: 4,
-};
-S.slidersRow = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginTop: 12 };
-S.sliderGroup = { display: 'flex', flexDirection: 'column', gap: 4 };
-S.sliderLabel = { fontSize: 12, color: '#a1a1aa' };
-S.sliderValue = { color: '#818cf8', fontWeight: 600 };
-S.range = { accentColor: '#6366f1' };
-S.scaleMarks = { display: 'flex', justifyContent: 'space-between', fontSize: 9, color: '#52525b', marginTop: 2 };
-S.scaleMark = { width: 16, textAlign: 'center' };
-S.scaleMarkActive = { color: '#818cf8', fontWeight: 600 };
-S.textarea = {
-  width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid #2a2a40',
-  background: '#121224', color: '#e4e4e7', fontSize: 13, outline: 'none',
-  resize: 'vertical', fontFamily: 'inherit', minHeight: 80, boxSizing: 'border-box',
-};
-S.actionRow = { display: 'flex', gap: 10, marginTop: 12 };
-S.saveBtn = {
-  flex: 1, padding: '10px', borderRadius: 10, border: 'none',
-  background: '#6366f1', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
-};
-S.msg = { fontSize: 13, margin: '8px 0 0', minHeight: 18 };
-S.hint = { textAlign: 'center', color: '#52525b', fontSize: 13, fontStyle: 'italic', marginTop: 12 };

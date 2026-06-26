@@ -1,163 +1,176 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
-import { isAuthenticated } from '@/lib/auth';
-import { EVENT_TYPES } from '@/lib/types';
+import { C, pageStyle, headerStyle, h1Style, backLinkStyle, emptyStyle, loadingContainerStyle, spinnerStyle, loadingTextStyle } from '@/lib/card-styles';
 
-interface EventRecord {
+interface EventGroup {
   id: string;
-  title: string;
-  description?: string;
-  event_date: string;
-  event_type?: 'life' | 'work' | 'travel' | 'milestone' | 'other';
-  visibility: 'public' | 'private';
-  icon?: string;
+  name: string;
+  icon: string;
+  color: string;
+  sort_order: number;
+  is_private: boolean;
+}
+
+interface EventLog {
+  id: string;
+  group_id: string;
+  event_at: string;
+  event_groups: {
+    name: string;
+    icon: string;
+    color: string;
+  };
 }
 
 export default function EventsPage() {
-  const [events, setEvents] = useState<EventRecord[]>([]);
-  const [filterType, setFilterType] = useState('all');
+  const [groups, setGroups] = useState<EventGroup[]>([]);
+  const [logs, setLogs] = useState<EventLog[]>([]);
   const [loading, setLoading] = useState(true);
+  const [range, setRange] = useState(30); // 默认看30天
 
-  useEffect(() => { fetchEvents(); }, []);
+  useEffect(() => { fetchData(); }, [range]);
 
-  const fetchEvents = async () => {
-    let q = supabase.from('events').select('*').order('event_date', { ascending: false }).limit(200);
-    if (!isAuthenticated()) q = q.eq('visibility', 'public');
-    const { data } = await q;
-    setEvents(data || []);
+  const fetchData = async () => {
+    setLoading(true);
+
+    const { data: gData } = await supabase
+      .from('event_groups')
+      .select('*')
+      .order('sort_order', { ascending: true });
+    setGroups(gData || []);
+
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - range);
+    const startStr = startDate.toISOString();
+
+    const { data: lData } = await supabase
+      .from('event_logs')
+      .select('*, event_groups(name, icon, color)')
+      .gte('event_at', startStr)
+      .order('event_at', { ascending: false })
+      .limit(500);
+    setLogs(lData || []);
     setLoading(false);
   };
 
-  // Group by year-month
-  const filtered = filterType === 'all' ? events : events.filter((e) => e.event_type === filterType);
-  const grouped = filtered.reduce((groups, ev) => {
-    const key = new Date(ev.event_date).toISOString().slice(0, 7); // YYYY-MM
-    if (!groups[key]) groups[key] = [];
-    groups[key].push(ev);
-    return groups;
-  }, {} as Record<string, EventRecord[]>);
+  // 按日期聚合
+  const groupedByDate = useMemo(() => {
+    const map: Record<string, EventLog[]> = {};
+    for (const l of logs) {
+      const day = l.event_at.slice(0, 10);
+      if (!map[day]) map[day] = [];
+      map[day].push(l);
+    }
+    return Object.entries(map).sort((a, b) => b[0].localeCompare(a[0]));
+  }, [logs]);
 
-  const typeCounts = events.reduce((acc, e) => {
-    acc[e.event_type || 'life'] = (acc[e.event_type || 'life'] || 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
+  // 每组总次数
+  const groupTotals = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const l of logs) {
+      map[l.group_id] = (map[l.group_id] || 0) + 1;
+    }
+    return map;
+  }, [logs]);
 
-  if (loading) {
-    return <div style={S.loading}><div style={S.spinner} /><p>加载中...</p></div>;
-  }
+  if (loading) return (
+    <div style={loadingContainerStyle}>
+      <div style={spinnerStyle} />
+      <p style={loadingTextStyle}>加载中...</p>
+    </div>
+  );
 
   return (
-    <div style={S.page}>
-      <header style={S.header}>
-        <Link href="/" style={S.back}>← 首页</Link>
-        <h1 style={S.h1}>📅 生活事件</h1>
-        <span style={S.badge}>{events.length} 条</span>
-        {isAuthenticated() && <Link href="/admin" style={S.adminLink}>管理 →</Link>}
+    <div style={pageStyle}>
+      <header style={headerStyle}>
+        <Link href="/" style={backLinkStyle}>← 返回首页</Link>
+        <h1 style={h1Style}>📅 事件记录</h1>
       </header>
 
-      {/* Type Filter */}
-      <section style={S.filterRow}>
-        <button onClick={() => setFilterType('all')}
-          style={{...S.filterBtn, ...(filterType === 'all' ? S.filterBtnActive : {})}}>
-          全部
-        </button>
-        {EVENT_TYPES.map((t) => (
-          <button key={t.value} onClick={() => setFilterType(t.value)}
+      {/* 范围选择 */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
+        {[30, 60, 90, 180, 365].map(d => (
+          <button key={d} onClick={() => setRange(d)}
             style={{
-              ...S.filterBtn,
-              ...(filterType === t.value ? S.filterBtnActive : {}),
+              ...rangeBtnStyle,
+              ...(range === d ? rangeBtnActiveStyle : {}),
             }}>
-            {t.label} ({typeCounts[t.value] || 0})
+            {d} 天
           </button>
         ))}
-      </section>
+      </div>
 
-      {/* Timeline */}
-      <main style={S.timeline}>
-        {Object.entries(grouped).map(([month, monthEvents]) => (
-          <section key={month} style={S.monthGroup}>
-            <h3 style={S.monthTitle}>
-              {new Date(month).toLocaleDateString('zh-CN', { year: 'numeric', month: 'long' })}
-            </h3>
-            <div style={S.monthLine}>
-              {monthEvents.map((ev) => {
-                const typeInfo = EVENT_TYPES.find((t) => t.value === ev.event_type);
-                return (
-                  <article key={ev.id} style={{
-                    ...S.eventCard,
-                    borderLeftColor: ev.visibility === 'private' ? '#f59e0b' : '#6366f1',
-                  }}>
-                    <div style={S.eventIconWrap}>
-                      <span style={S.eventIcon}>{ev.icon || (typeInfo?.icon || '📌')}</span>
-                    </div>
-                    <div style={S.eventBody}>
-                      <h4 style={S.eventTitle}>{ev.title}</h4>
-                      {ev.description && (
-                        <p style={S.eventDesc}>{ev.description}</p>
-                      )}
-                      <div style={S.eventMeta}>
-                        <span style={{
-                          ...S.typeBadge,
-                          background: '#16162a',
-                        }}>{typeInfo?.label || ev.event_type}</span>
-                        <span style={S.dateText}>
-                          {new Date(ev.event_date).toLocaleDateString('zh-CN')}
-                        </span>
-                        <span style={{
-                          ...(ev.visibility === 'private' ? S.privateBadge : S.publicBadge),
-                        }}>
-                          {ev.visibility === 'private' ? '私密' : '公开'}
-                        </span>
-                      </div>
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-          </section>
+      {/* 总览卡片 */}
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 28 }}>
+        {groups.map(g => (
+          <div key={g.id} style={{
+            ...statCardStyle,
+            borderColor: g.color,
+            background: g.color + '15',
+          }}>
+            <div style={{ fontSize: 22, marginBottom: 4 }}>{g.icon}</div>
+            <div style={{ fontSize: 12, color: '#a1a1aa', marginBottom: 4 }}>{g.name}</div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: '#e4e4e7' }}>{groupTotals[g.id] || 0}</div>
+            <div style={{ fontSize: 11, color: '#52525b' }}>次 / {range}天</div>
+          </div>
         ))}
+      </div>
 
-        {filtered.length === 0 && <p style={S.empty}>暂无事件记录</p>}
-      </main>
+      {/* 按日期展开 */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {groupedByDate.map(([date, dayLogs]) => (
+          <div key={date} style={dayBlockStyle}>
+            <div style={dayHeaderStyle}>
+              <span style={{ color: '#e4e4e7', fontWeight: 600, fontSize: 14 }}>{date}</span>
+              <span style={{ color: '#52525b', fontSize: 12 }}>共 {dayLogs.length} 次</span>
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {dayLogs.map(l => (
+                <span key={l.id} style={{
+                  ...logChipStyle,
+                  background: (l.event_groups?.color || '#6366f1') + '22',
+                  color: l.event_groups?.color || '#818cf8',
+                }}>
+                  {l.event_groups?.icon} {l.event_groups?.name}
+                  <span style={{ marginLeft: 4, fontSize: 10, color: '#71717a' }}>
+                    {new Date(l.event_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </span>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {groupedByDate.length === 0 && (
+        <p style={emptyStyle}>暂无数据</p>
+      )}
     </div>
   );
 }
 
-const S: Record<string, React.CSSProperties> = {};
-S.page = { minHeight: '100vh', maxWidth: 800, margin: '0 auto', padding: '28px 20px 40px' };
-S.loading = { minHeight: '80vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16 };
-S.spinner = { width: 36, height: 36, borderRadius: '50%', border: '3px solid #1e1e32', borderTopColor: '#6366f1', animation: 'spin 0.8s linear infinite' };
-S.header = { display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24 };
-S.back = { fontSize: 13, color: '#71717a', textDecoration: 'none' };
-S.h1 = { fontSize: 24, fontWeight: 800, color: '#fff', margin: 0, flex: 1 };
-S.badge = { padding: '4px 14px', borderRadius: 20, background: '#16162a', border: '1px solid #27273d', fontSize: 13, color: '#818cf8' };
-S.adminLink = { padding: '6px 14px', borderRadius: 10, border: '1px solid #27273d', color: '#818cf8', fontSize: 12, textDecoration: 'none' };
-S.filterRow = { display: 'flex', gap: 6, marginBottom: 24, flexWrap: 'wrap' };
-S.filterBtn = {
-  padding: '6px 14px', borderRadius: 20, border: '1px solid #27273d',
-  background: 'transparent', color: '#a1a1aa', cursor: 'pointer', fontSize: 11,
+// ─── Styles ───────────────────────────────────────────────────────────────────
+const rangeBtnStyle: React.CSSProperties = {
+  padding: '6px 14px', borderRadius: 8, border: '1px solid #2a2a40',
+  background: 'transparent', color: '#a1a1aa', cursor: 'pointer', fontSize: 12,
 };
-S.filterBtnActive = { background: '#16162a', color: '#fff', borderColor: '#6366f1' };
-S.timeline = { display: 'flex', flexDirection: 'column', gap: 32 };
-S.monthGroup = {};
-S.monthTitle = { fontSize: 15, fontWeight: 700, color: '#d4d4d8', margin: '0 0 14px' };
-S.monthLine = { display: 'flex', flexDirection: 'column', gap: 10, paddingLeft: 20, borderLeft: '2px solid #1e1e32', marginLeft: 9 };
-S.eventCard = {
-  display: 'flex', gap: 14, padding: '14px 18px', position: 'relative',
-  background: '#121224', border: '1px solid #1e1e32', borderLeft: '3px solid transparent',
-  borderRadius: 12, transition: 'border-color 0.15s',
+const rangeBtnActiveStyle: React.CSSProperties = {
+  borderColor: '#6366f1', background: 'rgba(99,102,241,0.15)', color: '#818cf8',
 };
-S.eventIconWrap = {};
-S.eventIcon = { fontSize: 26 };
-S.eventBody = { flex: 1, minWidth: 0 };
-S.eventTitle = { fontSize: 14, fontWeight: 600, color: '#e4e4e7', margin: '0 0 4px' };
-S.eventDesc = { fontSize: 12, color: '#a1a1aa', margin: '0 0 8px', lineHeight: 1.5 };
-S.eventMeta = { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' };
-S.typeBadge = { fontSize: 10, padding: '2px 8px', borderRadius: 20, fontWeight: 500 };
-S.dateText = { fontSize: 11, color: '#52525b' };
-S.publicBadge = { color: '#818cf8', fontSize: 10 };
-S.privateBadge = { color: '#fbbf24', fontSize: 10 };
-S.empty = { textAlign: 'center', color: '#52525b', fontSize: 13, padding: 48 };
+const statCardStyle: React.CSSProperties = {
+  flex: '1 1 120px', maxWidth: 160, padding: '14px 16px', borderRadius: 12,
+  border: '1px solid', textAlign: 'center',
+};
+const dayBlockStyle: React.CSSProperties = {
+  padding: '12px 16px', borderRadius: 12, background: '#16162a', border: '1px solid #2a2a40',
+};
+const dayHeaderStyle: React.CSSProperties = {
+  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+  marginBottom: 10,
+};
+const logChipStyle: React.CSSProperties = {
+  padding: '4px 10px', borderRadius: 20, fontSize: 12, fontWeight: 500,
+};

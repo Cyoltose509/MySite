@@ -203,6 +203,11 @@ async function loadPreBuiltCovers(): Promise<Record<string, string>> {
   return {};
 }
 
+/** Load pre-built cover JSON (used by anime/page.tsx directly) */
+export async function getAnimeCovers(): Promise<Record<string, string>> {
+  return loadPreBuiltCovers();
+}
+
 /**
  * Get anime cover image URL.
  * Strategy:

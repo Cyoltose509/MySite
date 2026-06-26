@@ -7,7 +7,7 @@ import Image from 'next/image';
 import { SyncPanel } from '@/components/admin/SyncPanel';
 import { MusicTagEditor } from '@/components/admin/MusicTagEditor';
 import { MoodLogger } from '@/components/admin/MoodLogger';
-import { EventManager } from '@/components/admin/EventManager';
+import { EventCounter } from '@/components/admin/EventCounter';
 
 type TabId = 'sync' | 'music' | 'mood' | 'events';
 
@@ -15,7 +15,7 @@ const TABS: { id: TabId; label: string; icon: string }[] = [
   { id: 'sync', label: '数据同步', icon: '🔄' },
   { id: 'music', label: '音乐标签', icon: '🎵' },
   { id: 'mood', label: '心情记录', icon: '🧠' },
-  { id: 'events', label: '事件管理', icon: '📅' },
+  { id: 'events', label: '事件计数', icon: '📅' },
 ];
 
 export default function AdminPage() {
@@ -87,7 +87,7 @@ export default function AdminPage() {
         {activeTab === 'sync' && <SyncPanel />}
         {activeTab === 'music' && <MusicTagEditor />}
         {activeTab === 'mood' && <MoodLogger />}
-        {activeTab === 'events' && <EventManager />}
+        {activeTab === 'events' && <EventCounter />}
       </main>
     </div>
   );
