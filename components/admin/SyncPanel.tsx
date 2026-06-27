@@ -44,9 +44,7 @@ export function SyncPanel() {
       <div style={styles.note}>
         <p style={styles.noteText}>
           <span style={styles.noteIcon}>💡</span>
-          番剧数据直接从 GitHub 仓库实时读取，无需同步。点击{' '}
-          <a href="/anime" style={styles.link}>番剧页面</a>
-          {' '}查看，数据自动缓存 6 小时。
+          番剧数据直接从 GitHub 仓库实时读取，无需同步。
         </p>
       </div>
 
@@ -67,10 +65,6 @@ export function SyncPanel() {
 
       <div style={styles.info}>
         <div style={styles.infoRow}>
-          <span style={styles.infoLabel}>番剧源</span>
-          <span style={styles.infoValue}>GitHub 实时读取</span>
-        </div>
-        <div style={styles.infoRow}>
           <span style={styles.infoLabel}>网易云歌单</span>
           <span style={styles.infoValue}>7611680006</span>
         </div>
@@ -87,88 +81,17 @@ export function SyncPanel() {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  card: {
-    background: '#16162a',
-    border: '1px solid #2a2a40',
-    borderRadius: 16,
-    padding: 24,
-  },
-  h3: {
-    fontSize: 16,
-    fontWeight: 600,
-    color: '#e4e4e7',
-    margin: 0,
-    marginBottom: 20,
-  },
-  note: {
-    padding: '12px 16px',
-    background: 'rgba(99,102,241,0.08)',
-    border: '1px solid rgba(99,102,241,0.2)',
-    borderRadius: 10,
-    marginBottom: 16,
-  },
-  noteText: {
-    fontSize: 12,
-    color: '#a1a1aa',
-    margin: 0,
-    lineHeight: 1.6,
-  },
-  noteIcon: {
-    marginRight: 4,
-  },
-  link: {
-    color: '#818cf8',
-    textDecoration: 'none',
-  },
-  btnRow: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 10,
-  },
-  btn: {
-    padding: '12px 16px',
-    borderRadius: 10,
-    border: '1px solid #2a2a40',
-    background: 'transparent',
-    color: '#e4e4e7',
-    cursor: 'pointer',
-    fontSize: 13,
-    textAlign: 'left',
-    transition: 'all 0.2s',
-  },
-  btnActive: {
-    borderColor: '#6366f1',
-    background: 'rgba(99,102,241,0.1)',
-    color: '#818cf8',
-  },
-  result: {
-    fontSize: 13,
-    marginTop: 14,
-    marginBottom: 0,
-    padding: '10px 14px',
-    borderRadius: 8,
-  },
-  info: {
-    marginTop: 18,
-    padding: '12px 16px',
-    background: '#121224',
-    borderRadius: 10,
-  },
-  infoRow: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '4px 0',
-  },
-  infoLabel: {
-    fontSize: 11,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    color: '#52525b',
-  },
-  infoValue: {
-    fontSize: 12,
-    color: '#a1a1aa',
-    fontFamily: 'monospace',
-  },
+  card: { background: '#16162a', border: '1px solid #2a2a40', borderRadius: 16, padding: 24 },
+  h3: { fontSize: 16, fontWeight: 600, color: '#e4e4e7', margin: 0, marginBottom: 20 },
+  note: { padding: '12px 16px', background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 10, marginBottom: 16 },
+  noteText: { fontSize: 12, color: '#a1a1aa', margin: 0, lineHeight: 1.6 },
+  noteIcon: { marginRight: 4 },
+  btnRow: { display: 'flex', flexDirection: 'column', gap: 10 },
+  btn: { padding: '12px 16px', borderRadius: 10, border: '1px solid #2a2a40', background: 'transparent', color: '#e4e4e7', cursor: 'pointer', fontSize: 13, textAlign: 'left' as const, transition: 'all 0.2s' },
+  btnActive: { borderColor: '#6366f1', background: 'rgba(99,102,241,0.1)', color: '#818cf8' },
+  result: { fontSize: 13, marginTop: 14, marginBottom: 0, padding: '10px 14px', borderRadius: 8 },
+  info: { marginTop: 18, padding: '12px 16px', background: '#121224', borderRadius: 10 },
+  infoRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0' },
+  infoLabel: { fontSize: 11, textTransform: 'uppercase' as const, letterSpacing: 1, color: '#52525b' },
+  infoValue: { fontSize: 12, color: '#a1a1aa', fontFamily: 'monospace' },
 };

@@ -18,6 +18,7 @@ export interface NeteaseTrack {
   artist: string;
   album: string;
   duration: number;
+  tags: string[];
 }
 
 export interface PlaylistData {
@@ -91,6 +92,7 @@ export async function fetchNeteasePlaylist(
           duration: (s.duration || s.dt || 0) > 1000
             ? Math.floor((s.duration || s.dt) / 1000)
             : (s.duration || s.dt || 0),
+          tags: [],
         });
       }
     }
@@ -173,7 +175,6 @@ export async function syncNeteaseToSupabase(
 
   const CHUNK = 100;
   let synced = 0;
-
   for (let i = 0; i < data.tracks.length; i += CHUNK) {
     const chunk = data.tracks.slice(i, i + CHUNK);
     const musicData = chunk.map((t) => ({
@@ -182,10 +183,10 @@ export async function syncNeteaseToSupabase(
       album: t.album,
       netease_id: t.id,
       duration: t.duration,
-      play_count: 0,
+      tags: t.tags || [],
     }));
 
-    const { error, result } = await supabase.rpc('fn_sync_music', {
+    const { error, data: result } = await supabase.rpc('fn_sync_music', {
       p_hash: passwordHash,
       p_data: musicData,
     });

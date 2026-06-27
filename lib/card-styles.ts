@@ -32,7 +32,7 @@ export const pageStyle: CSSProperties = {
 
 /* ── Card grid (5 columns) ── */
 export const cardGridStyle: CSSProperties = {
-  display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10,
+  display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 10,
 };
 
 /* ── Card (cover as blurred background) ── */
@@ -107,13 +107,15 @@ export const filterRowStyle: CSSProperties = { display: 'flex', alignItems: 'cen
 export const filterLabelStyle: CSSProperties = { fontSize: 12, color: C.textDead, fontWeight: 600 };
 export const filterTabsStyle: CSSProperties = { display: 'flex', gap: 6, flexWrap: 'wrap' };
 export const filterTabStyle: CSSProperties = {
-  padding: '5px 12px', borderRadius: 20, border: '1px solid ' + C.borderLit,
+  padding: '5px 12px', borderRadius: 20,
+  border: '1px solid rgba(255,255,255,0.16)',
   background: 'transparent', color: C.textSec, cursor: 'pointer', fontSize: 11,
+  outline: 'none',
 };
 export const filterTabActiveStyle: CSSProperties = {
-  ...filterTabStyle, background: C.card, color: '#fff', borderColor: C.accent,
+  ...filterTabStyle, background: C.accent, color: '#fff', borderColor: C.accent, fontWeight: 600,
 };
-export const tagCountStyle: CSSProperties = { fontSize: 10, color: C.textDim, marginLeft: 2 };
+export const tagCountStyle: CSSProperties = { fontSize: 10, color: '#ffffff99', marginLeft: 2 };
 export const statsRowStyle: CSSProperties = { display: 'flex', gap: 10, fontSize: 12, color: C.textDim, marginTop: 4 };
 
 /* ── Search input ── */

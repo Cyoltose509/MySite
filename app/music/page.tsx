@@ -32,8 +32,11 @@ interface MusicTagData {
   tag: string;
   likability?: number;
   singability?: number;
-  comment?: string;
+  voice?: string;
+  note?: string;
 }
+
+const RATING_LABELS = ['', '拉完了', 'NPC', '人上人', '顶级', '夯'];
 
 const SORT_OPTIONS = [
   { value: 'title',       label: '歌名 A→Z' },
@@ -52,6 +55,9 @@ export default function MusicPage() {
   const [search, setSearch] = useState('');
   const [sortBy, setSortBy] = useState<SortBy>('title');
   const [tagFilter, setTagFilter] = useState<string | null>(null);
+  const [voiceFilter, setVoiceFilter] = useState<string | null>(null);
+  const [likabilityFilter, setLikabilityFilter] = useState<number | null>(null);
+  const [singabilityFilter, setSingabilityFilter] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [detailMusic, setDetailMusic] = useState<MusicRecord | null>(null);
@@ -132,9 +138,21 @@ export default function MusicPage() {
     ? sorted.filter(m => (tagsMap[m.id] || []).some(t => t.tag === tagFilter))
     : sorted;
 
-  const filtered = search.trim()
-    ? byTag.filter(m => m.title.toLowerCase().includes(search.toLowerCase()) || m.artist.toLowerCase().includes(search.toLowerCase()))
+  const byVoice = voiceFilter
+    ? byTag.filter(m => (tagsMap[m.id] || []).some(t => t.voice === voiceFilter))
     : byTag;
+
+  const byLikability = likabilityFilter
+    ? byVoice.filter(m => (tagsMap[m.id] || []).some(t => t.likability === likabilityFilter))
+    : byVoice;
+
+  const bySingability = singabilityFilter
+    ? byLikability.filter(m => (tagsMap[m.id] || []).some(t => t.singability === singabilityFilter))
+    : byLikability;
+
+  const filtered = search.trim()
+    ? bySingability.filter(m => m.title.toLowerCase().includes(search.toLowerCase()) || m.artist.toLowerCase().includes(search.toLowerCase()))
+    : bySingability;
 
   const fmtDur = (sec: number | null) => {
     if (!sec) return '';
@@ -211,10 +229,67 @@ export default function MusicPage() {
           </div>
         )}
 
+        <div style={filterRowStyle}>
+          <span style={filterLabelStyle}>声线</span>
+          <div style={filterTabsStyle}>
+            <button onClick={() => setVoiceFilter(null)}
+              style={{ ...filterTabStyle, ...(voiceFilter === null ? filterTabActiveStyle : {}) }}>
+              全部
+            </button>
+            <button onClick={() => setVoiceFilter('male')}
+              style={{ ...filterTabStyle, ...(voiceFilter === 'male' ? filterTabActiveStyle : {}) }}>
+              ♂ 男声
+            </button>
+            <button onClick={() => setVoiceFilter('female')}
+              style={{ ...filterTabStyle, ...(voiceFilter === 'female' ? filterTabActiveStyle : {}) }}>
+              ♀ 女声
+            </button>
+            <button onClick={() => setVoiceFilter('duet')}
+              style={{ ...filterTabStyle, ...(voiceFilter === 'duet' ? filterTabActiveStyle : {}) }}>
+              ♪ 男女
+            </button>
+          </div>
+        </div>
+
+        <div style={filterRowStyle}>
+          <span style={filterLabelStyle}>♥ 喜欢度</span>
+          <div style={filterTabsStyle}>
+            <button onClick={() => setLikabilityFilter(null)}
+              style={{ ...filterTabStyle, ...(likabilityFilter === null ? filterTabActiveStyle : {}) }}>
+              全部
+            </button>
+            {[5, 4, 3, 2, 1].map(v => (
+              <button key={v} onClick={() => setLikabilityFilter(v)}
+                style={{ ...filterTabStyle, ...(likabilityFilter === v ? filterTabActiveStyle : {}) }}>
+                {RATING_LABELS[v]}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div style={filterRowStyle}>
+          <span style={filterLabelStyle}>🎤 能唱度</span>
+          <div style={filterTabsStyle}>
+            <button onClick={() => setSingabilityFilter(null)}
+              style={{ ...filterTabStyle, ...(singabilityFilter === null ? filterTabActiveStyle : {}) }}>
+              全部
+            </button>
+            {[5, 4, 3, 2, 1].map(v => (
+              <button key={v} onClick={() => setSingabilityFilter(v)}
+                style={{ ...filterTabStyle, ...(singabilityFilter === v ? filterTabActiveStyle : {}) }}>
+                {RATING_LABELS[v]}
+              </button>
+            ))}
+          </div>
+        </div>
+
         <div style={statsRowStyle}>
           <span>已标记 {taggedCount}</span>
           <span>未标记 {musicList.length - taggedCount}</span>
-          {tagFilter && <span style={{ color: C.accentLt }}>筛选: {tagFilter} ({filtered.length})</span>}
+          {tagFilter && <span style={{ color: C.accentLt }}>标签: {tagFilter}</span>}
+          {voiceFilter && <span style={{ color: C.accentLt }}>声线: {voiceFilter === 'male' ? '♂' : voiceFilter === 'female' ? '♀' : '♪'}</span>}
+          {likabilityFilter && <span style={{ color: C.accentLt }}>♥ {RATING_LABELS[likabilityFilter]}</span>}
+          {singabilityFilter && <span style={{ color: C.accentLt }}>🎤 {RATING_LABELS[singabilityFilter]}</span>}
         </div>
       </section>
 
@@ -236,10 +311,10 @@ export default function MusicPage() {
                 {m.duration && <span style={cardDurationStyle}>{fmtDur(m.duration)}</span>}
                 <div style={{ display: 'flex', gap: 4 }}>
                   {hasTags && likability && (
-                    <span style={badgeStyle(C.red)}>♥{likability}</span>
+                    <span style={badgeStyle(C.red)}>♥{RATING_LABELS[likability]}</span>
                   )}
                   {hasTags && singability && (
-                    <span style={badgeStyle(C.accentLt)}>🎤{singability}</span>
+                    <span style={badgeStyle(C.accentLt)}>🎤{RATING_LABELS[singability]}</span>
                   )}
                 </div>
                 {hasTags && (
@@ -297,18 +372,24 @@ export default function MusicPage() {
                   <div>
                     <span style={scoreLabelStyle}>♥ 喜欢度</span>
                     <div style={scoreBarContainerStyle}>
-                      <div style={{ height: '100%', background: C.red, borderRadius: 5, width: `${(detailTags[0].likability || 0) * 10}%` }} />
+                      <div style={{ height: '100%', background: C.red, borderRadius: 5, width: `${(detailTags[0].likability || 0) * 20}%` }} />
                     </div>
-                    <span style={scoreNumStyle}>{detailTags[0].likability || 0}/10</span>
+                    <span style={scoreNumStyle}>{RATING_LABELS[detailTags[0].likability || 0]}</span>
                   </div>
                   <div>
                     <span style={scoreLabelStyle}>🎤 能唱度</span>
                     <div style={scoreBarContainerStyle}>
-                      <div style={{ height: '100%', background: C.accentLt, borderRadius: 5, width: `${(detailTags[0].singability || 0) * 10}%` }} />
+                      <div style={{ height: '100%', background: C.accentLt, borderRadius: 5, width: `${(detailTags[0].singability || 0) * 20}%` }} />
                     </div>
-                    <span style={scoreNumStyle}>{detailTags[0].singability || 0}/10</span>
+                    <span style={scoreNumStyle}>{RATING_LABELS[detailTags[0].singability || 0]}</span>
                   </div>
                 </div>
+
+                {detailTags[0]?.voice && (
+                  <div style={{ marginBottom: 12, fontSize: 13, color: C.textSec }}>
+                    声线：{detailTags[0].voice === 'male' ? '♂ 男声' : detailTags[0].voice === 'female' ? '♀ 女声' : '♪ 男女'}
+                  </div>
+                )}
 
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
                   {detailTags.map(t => (
@@ -316,10 +397,10 @@ export default function MusicPage() {
                   ))}
                 </div>
 
-                {detailTags[0]?.comment && (
+                {detailTags[0]?.note && (
                   <div style={{ background: C.surface, borderRadius: 12, padding: 16 }}>
-                    <p style={{ fontSize: 12, color: C.textDim, margin: '0 0 6px' }}>备注</p>
-                    <p style={{ fontSize: 14, color: C.text, margin: 0, lineHeight: 1.6 }}>{detailTags[0].comment}</p>
+                    <p style={{ fontSize: 12, color: C.textDim, margin: '0 0 6px' }}>记录</p>
+                    <p style={{ fontSize: 14, color: C.text, margin: 0, lineHeight: 1.6 }}>{detailTags[0].note}</p>
                   </div>
                 )}
               </div>

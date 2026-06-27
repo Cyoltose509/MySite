@@ -100,12 +100,15 @@ async function main() {
 
     if (data.code === 200 && data.songs) {
       for (const s of data.songs) {
+        // 提取标签
+        const tags = [...(s.tags || []), ...(s.privilege?.tags || [])];
         tracks.push({
           netease_id: String(s.id),
           title: s.name || '',
           artist: s.artists?.[0]?.name || 'Unknown',
           album: s.album?.name || '',
           duration: (s.duration || 0) > 1000 ? Math.floor(s.duration / 1000) : (s.duration || 0),
+          tags: [...new Set(tags)],
         });
       }
     }
@@ -161,6 +164,33 @@ async function main() {
     );
     inserted += chunk.length;
   }
+
+  // 4. Import tags
+  log('\x1b[34m→\x1b[0m', '导入网易云标签...');
+  const taggedTracks = tracks.filter(t => t.tags && t.tags.length > 0);
+  log('\x1b[90m  ...\x1b[0m', `${taggedTracks.length} 首歌曲有标签`);
+
+  // Get music IDs by netease_id
+  const { rows: musicRows } = await client.query(
+    'SELECT id, netease_id FROM public.music_list WHERE netease_id IS NOT NULL'
+  );
+  const neteaseToId = {};
+  musicRows.forEach(r => { neteaseToId[String(r.netease_id)] = r.id; });
+
+  let tagCount = 0;
+  for (const t of taggedTracks) {
+    const mid = neteaseToId[t.netease_id];
+    if (!mid) continue;
+    for (const tag of t.tags) {
+      await client.query(
+        'INSERT INTO public.music_tags (music_id, tag) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [mid, tag]
+      );
+      tagCount++;
+    }
+  }
+
+  log('\x1b[32m✓\x1b[0m', `已导入 ${tagCount} 个标签`);
 
   await client.end();
 

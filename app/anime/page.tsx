@@ -90,7 +90,8 @@ export default function AnimePage() {
 
   /* unique status & rating values for filter pills */
   const statuses = [...new Set(animeList.map(a => a.status))];
-  const ratings  = [...new Set(animeList.map(a => a.rating).filter(Boolean))] as string[];
+  const ratings  = [...new Set(animeList.map(a => a.rating).filter(Boolean))]
+    .sort((a, b) => (RATING_ORDER[a] ?? 99) - (RATING_ORDER[b] ?? 99)) as string[];
 
   /* rating stats */
   const ratingStats = useMemo(() => {
