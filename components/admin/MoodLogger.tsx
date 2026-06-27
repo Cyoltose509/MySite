@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 import { getSession } from '@/lib/auth';
-import { PRESET_MOODS, MOOD_SCORE_LABELS } from '@/lib/types';
+import { MOOD_SCORE_LABELS } from '@/lib/types';
 
 interface MoodLogRow {
   id: string;
@@ -21,9 +21,8 @@ export function MoodLogger() {
   const [message, setMessage] = useState<{ text: string; type: 'ok' | 'err' } | null>(null);
 
   // Form state
-  const [mood, setMood] = useState('');
   const [note, setNote] = useState('');
-  const [moodScore, setMoodScore] = useState<number>(6); // 默认"尚可"
+  const [moodScore, setMoodScore] = useState<number>(6);
   const [visibility, setVisibility] = useState<'public' | 'private'>('public');
   const [customDate, setCustomDate] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -40,13 +39,11 @@ export function MoodLogger() {
   };
 
   const resetForm = () => {
-    setMood(''); setNote(''); setMoodScore(6);
+    setNote(''); setMoodScore(6);
     setVisibility('public'); setCustomDate(''); setEditingId(null); setMessage(null);
   };
 
   const handleSave = async () => {
-    if (!mood) { setMessage({ text: '请选择或输入心情', type: 'err' }); return; }
-
     setLoading(true);
     const hash = getSession() || '';
 
@@ -55,7 +52,7 @@ export function MoodLogger() {
         await supabase.rpc('fn_update_mood_log', {
           p_hash: hash,
           p_log_id: editingId,
-          p_mood: mood,
+          p_mood: scoreLabel(moodScore),
           p_note: note || null,
           p_mood_score: moodScore || null,
           p_visibility: visibility,
@@ -64,7 +61,7 @@ export function MoodLogger() {
       } else {
         await supabase.rpc('fn_save_mood_log', {
           p_hash: hash,
-          p_mood: mood,
+          p_mood: scoreLabel(moodScore),
           p_note: note || null,
           p_mood_score: moodScore || null,
           p_visibility: visibility,
@@ -92,7 +89,6 @@ export function MoodLogger() {
 
   const startEdit = (log: MoodLogRow) => {
     setEditingId(log.id);
-    setMood(log.mood);
     setNote(log.note || '');
     setMoodScore(log.mood_score || 6);
     setVisibility(log.visibility);
@@ -111,23 +107,10 @@ export function MoodLogger() {
       <div style={styles.formSection}>
         <p style={styles.sectionTitle}>{editingId ? '编辑记录' : '添加新记录'}</p>
 
-        {/* Preset moods */}
-        <div style={styles.presetRow}>
-          {PRESET_MOODS.map((m) => (
-            <button key={m} onClick={() => setMood(m)} style={{
-              ...styles.presetBtn, ...(mood === m ? styles.presetActive : {}),
-            }}>{m.split(' ')[0]}</button>
-          ))}
-        </div>
-
-        {/* Custom mood input */}
-        <input value={mood} onChange={(e) => setMood(e.target.value)}
-          placeholder="自定义心情..." style={styles.input} />
-
-        {/* 心情评分滑条（很差→极佳，10级） */}
+        {/* 心情评分滑条（1-10） */}
         <div style={styles.sliderGroup}>
           <label style={styles.sliderLabel}>
-            心情评分: {moodScore}/10 — {scoreLabel(moodScore)}
+            心情: {moodScore}/10 — {scoreLabel(moodScore)}
           </label>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: 11, color: '#71717a', flexShrink: 0 }}>很差</span>

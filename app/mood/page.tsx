@@ -1,40 +1,91 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { isAuthenticated } from '@/lib/auth';
+import { MOOD_SCORE_LABELS, MOOD_EMOJIS, TIME_SCALES, type TimeScale } from '@/lib/types';
+import { C } from '@/lib/card-styles';
 
-interface MoodRecord {
+interface MoodLog {
   id: string;
   mood: string;
-  comment?: string;
-  singability?: number;
-  likability?: number;
+  note?: string;
+  mood_score?: number;
   visibility: 'public' | 'private';
   created_at: string;
 }
 
+const CHART_H = 300;
+const PAD_T = 10;
+const PAD_B = 50;
+const PAD_L = 50;
+const PAD_R = 30;
+const DOT_R = 5;
+const LINE_COLOR = '#a78bfa';
+
 export default function MoodPage() {
-  const [logs, setLogs] = useState<MoodRecord[]>([]);
+  const [logs, setLogs] = useState<MoodLog[]>([]);
   const [loading, setLoading] = useState(true);
+  const [scale, setScale] = useState<TimeScale>('daily');
 
   useEffect(() => { fetchLogs(); }, []);
 
   const fetchLogs = async () => {
-    let q = supabase.from('mood_logs').select('*').order('created_at', { ascending: false }).limit(200);
+    let q = supabase.from('mood_logs').select('*').order('created_at', { ascending: true }).limit(500);
     if (!isAuthenticated()) q = q.eq('visibility', 'public');
     const { data } = await q;
     setLogs(data || []);
     setLoading(false);
   };
 
-  // Mood distribution for simple chart
-  const moodDist = logs.reduce((acc, l) => {
-    const emoji = l.mood.split(' ')[0] || l.mood;
-    acc[emoji] = (acc[emoji] || 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
+  // 按时间尺度聚合 mood_score 平均值
+  const points = useMemo(() => {
+    if (!logs.length) return [];
+    const alignDown = (ts: number): number => {
+      const d = new Date(ts);
+      switch (scale) {
+        case 'hourly': d.setMinutes(0, 0, 0); return d.getTime();
+        case 'daily': d.setHours(0, 0, 0, 0); return d.getTime();
+        case 'weekly': { d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - d.getDay()); return d.getTime(); }
+        case 'monthly': { d.setDate(1); d.setHours(0, 0, 0, 0); return d.getTime(); }
+        case 'yearly': { d.setMonth(0, 1); d.setHours(0, 0, 0, 0); return d.getTime(); }
+      }
+    };
+
+    const groups: Record<string, number[]> = {};
+    for (const l of logs) {
+      if (!l.mood_score) continue;
+      const key = String(alignDown(new Date(l.created_at).getTime()));
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(l.mood_score);
+    }
+
+    return Object.keys(groups).sort().map(key => ({
+      ts: Number(key),
+      avg: groups[key].reduce((a, b) => a + b, 0) / groups[key].length,
+      count: groups[key].length,
+    }));
+  }, [logs, scale]);
+
+  const fmtLabel = (ts: number): string => {
+    const d = new Date(ts);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    switch (scale) {
+      case 'hourly': return `${pad(d.getMonth()+1)}/${pad(d.getDate())} ${pad(d.getHours())}:00`;
+      case 'daily': return `${pad(d.getMonth()+1)}/${pad(d.getDate())}`;
+      case 'weekly': return `${pad(d.getMonth()+1)}/${pad(d.getDate())}`;
+      case 'monthly': return `${d.getFullYear()}/${pad(d.getMonth()+1)}`;
+      case 'yearly': return `${d.getFullYear()}`;
+    }
+  };
+
+  // 图表尺寸计算
+  const barW = 10;
+  const totalW = Math.max(points.length * (barW + 2) + PAD_L + PAD_R, 600);
+  const plotH = CHART_H - PAD_T - PAD_B;
+
+  const latestScore = logs.filter(l => l.mood_score).slice(-1)[0]?.mood_score;
 
   if (loading) {
     return <div style={S.loading}><div style={S.spinner} /><p>加载中...</p></div>;
@@ -46,84 +97,132 @@ export default function MoodPage() {
         <Link href="/" style={S.back}>← 首页</Link>
         <h1 style={S.h1}>🧠 心情记录</h1>
         <span style={S.badge}>{logs.length} 条</span>
-        {isAuthenticated() && (
-          <Link href="/admin" style={S.adminLink}>管理 →</Link>
-        )}
+        {isAuthenticated() && (<Link href="/admin" style={S.adminLink}>管理 →</Link>)}
       </header>
 
-      {/* Mood Distribution Bar */}
-      {Object.keys(moodDist).length > 0 && (
-        <section style={S.distBar}>
-          {Object.entries(moodDist)
-            .sort((a, b) => b[1] - a[1])
-            .map(([emoji, count]) => (
-              <div key={emoji} style={{ ...S.distItem, flex: count }}>
-                <span style={S.distEmoji}>{emoji}</span>
-                <span style={S.distCount}>{count}</span>
-              </div>
-            ))}
-        </section>
+      {/* 当前心情指示 */}
+      {latestScore && (
+        <div style={{
+          textAlign: 'center', padding: '16px 20px', borderRadius: 16,
+          background: '#121224', border: '1px solid #1e1e32', marginBottom: 24,
+        }}>
+          <div style={{ fontSize: 13, color: '#a1a1aa', marginBottom: 4 }}>最近心情</div>
+          <div style={{ fontSize: 48, lineHeight: 1 }}>{MOOD_EMOJIS[(latestScore || 6) - 1]}</div>
+          <div style={{ fontSize: 32, fontWeight: 800, color: '#e4e4e7' }}>{latestScore}/10</div>
+          <div style={{ fontSize: 14, color: '#a5b4fc' }}>{MOOD_SCORE_LABELS[latestScore]}</div>
+        </div>
       )}
 
-      {/* Timeline */}
-      <main style={S.timeline}>
-        {logs.map((log) => (
-          <article key={log.id} style={S.logCard}>
-            <div style={S.logLeft}>
-              <span style={S.logEmoji}>{log.mood.split(' ')[0]}</span>
-              <div style={S.logDate}>
-                <p style={S.dateMain}>
-                  {new Date(log.created_at).toLocaleDateString('zh-CN', {
-                    month: 'long', day: 'numeric',
-                  })}
-                </p>
-                <p style={S.dateSub}>
-                  {new Date(log.created_at).toLocaleTimeString('zh-CN', {
-                    hour: '2-digit', minute: '2-digit',
-                  })}
-                </p>
-              </div>
-            </div>
-
-            <div style={S.logBody}>
-              <p style={S.moodText}>{log.mood}</p>
-
-              {log.comment && (
-                <p style={S.commentText}>{log.comment}</p>
-              )}
-
-              {(log.singability || log.likability) && (
-                <div style={S.sliderRow}>
-                  {log.singability && (
-                    <span style={S.sliderChip}>🎤 能唱度 {log.singability}/5</span>
-                  )}
-                  {log.likability && (
-                    <span style={S.sliderChip}>❤️ 喜欢度 {log.likability}/5</span>
-                  )}
-                </div>
-              )}
-
-              <div style={S.logFooter}>
-                <span style={{
-                  ...S.visBadge,
-                  color: log.visibility === 'private' ? '#fbbf24' : '#818cf8',
-                  background: log.visibility === 'private' ? 'rgba(245,158,11,0.12)' : 'rgba(99,102,241,0.12)',
-                }}>
-                  {log.visibility === 'private' ? '🔒 私密' : '🌐 公开'}
-                </span>
-              </div>
-            </div>
-          </article>
+      {/* 尺度选择 */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+        {TIME_SCALES.map(s => (
+          <button key={s.value} onClick={() => setScale(s.value)} style={{
+            padding: '5px 12px', borderRadius: 14, fontSize: 12, outline: 'none',
+            border: `1px solid ${scale === s.value ? '#6366f1' : 'rgba(255,255,255,.12)'}`,
+            background: scale === s.value ? '#6366f122' : 'transparent',
+            color: scale === s.value ? '#a5b4fc' : '#a1a1aa', cursor: 'pointer',
+          }}>{s.label}</button>
         ))}
+        <span style={{ fontSize: 11, color: '#52525b', marginLeft: 'auto' }}>{points.length} 个数据点</span>
+      </div>
 
-        {logs.length === 0 && <p style={S.empty}>暂无心情记录</p>}
-      </main>
+      {/* 折线图 */}
+      {points.length > 1 && (
+        <div style={{ overflowX: 'auto', borderRadius: 16, border: '1px solid #1e1e32', background: '#0c0c1a', marginBottom: 32 }}>
+          <svg width={totalW} height={CHART_H} style={{ display: 'block', fontFamily: 'sans-serif', minWidth: '100%' }}>
+            <defs>
+              <linearGradient id="moodGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#a78bfa" stopOpacity="0.35"/>
+                <stop offset="100%" stopColor="#a78bfa" stopOpacity="0.02"/>
+              </linearGradient>
+            </defs>
+
+            {/* 心情等级背景带 */}
+            {[10, 8, 6, 4, 2].map(level => {
+              const y = PAD_T + plotH * (1 - level / 10);
+              const colors: Record<number, string> = { 10: '#4ade8055', 8: '#a3e63544', 6: '#facc1544', 4: '#f9731644', 2: '#ef444444' };
+              const labels: Record<number, string> = { 10: '极佳', 8: '很好', 6: '尚可', 4: '稍差', 2: '很差' };
+              return (
+                <g key={level}>
+                  <rect x={PAD_L} y={y} width={totalW - PAD_L - PAD_R} height={plotH / 5} fill={colors[level] || 'transparent'} rx={0}/>
+                  <text x={PAD_L - 8} y={y + 4} textAnchor="end" fontSize={9} fill="#52525b">{level}</text>
+                  <text x={PAD_L + 4} y={y + plotH / 5 - 4} fontSize={8} fill="#ffffff22">{labels[level] || ''}</text>
+                </g>
+              );
+            })}
+
+            {/* 渐变填充区域 */}
+            <path
+              d={[
+                `M${PAD_L + barW / 2},${PAD_T + plotH}`,
+                ...points.map((p, i) => {
+                  const x = PAD_L + i * (barW + 2) + barW / 2;
+                  const y = PAD_T + plotH * (1 - p.avg / 10);
+                  return `L${x},${y}`;
+                }),
+                `L${PAD_L + (points.length - 1) * (barW + 2) + barW / 2},${PAD_T + plotH}Z`,
+              ].join(' ')}
+              fill="url(#moodGrad)"
+            />
+
+            {/* 折线 */}
+            {points.map((p, i) => {
+              if (i === 0) return null;
+              const prev = points[i - 1];
+              const x1 = PAD_L + (i - 1) * (barW + 2) + barW / 2;
+              const x2 = PAD_L + i * (barW + 2) + barW / 2;
+              const y1 = PAD_T + plotH * (1 - prev.avg / 10);
+              const y2 = PAD_T + plotH * (1 - p.avg / 10);
+              return (
+                <g key={p.ts}>
+                  <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={LINE_COLOR} strokeWidth={2.5} strokeLinecap="round"/>
+                </g>
+              );
+            })}
+
+            {/* 数据点 */}
+            {points.map((p, i) => {
+              const x = PAD_L + i * (barW + 2) + barW / 2;
+              const y = PAD_T + plotH * (1 - p.avg / 10);
+              return (
+                <g key={p.ts}>
+                  <circle cx={x} cy={y} r={DOT_R} fill={LINE_COLOR} opacity={0.9}/>
+                  {/* 标签（稀疏） */}
+                  {points.length <= 60 || i % Math.ceil(points.length / 20) === 0 ? (
+                    <text x={x} y={CHART_H - 8} textAnchor="middle" fontSize={9} fill="#52525b"
+                      transform={`rotate(-35, ${x}, ${CHART_H - 8})`}>{fmtLabel(p.ts)}</text>
+                  ) : null}
+                </g>
+              );
+            })}
+          </svg>
+        </div>
+      )}
+
+      {points.length <= 1 && <p style={S.empty}>数据点太少，至少需要 2 条记录才能生成图表</p>}
+
+      {/* 最近记录列表 */}
+      <div style={{ marginTop: 8 }}>
+        <h3 style={{ fontSize: 15, fontWeight: 600, color: '#e4e4e7', margin: '0 0 14px' }}>最近记录</h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {logs.slice(-20).reverse().map(log => (
+            <div key={log.id} style={S.logRow}>
+              <span style={{ fontSize: 20, minWidth: 30, textAlign: 'center' }}>{MOOD_EMOJIS[(log.mood_score || 6) - 1]}</span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#e4e4e7' }}>{log.mood_score}/10 {MOOD_SCORE_LABELS[log.mood_score || 6] || ''}</span>
+              {log.note && <span style={{ fontSize: 12, color: '#a1a1aa', flex: 1, whiteSpace: 'pre-wrap' }}>{log.note}</span>}
+              <span style={{ fontSize: 11, color: '#52525b', fontFamily: 'monospace' }}>
+                {new Date(log.created_at).toLocaleDateString('zh-CN')} {new Date(log.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
 
 const S: Record<string, React.CSSProperties> = {};
-S.page = { minHeight: '100vh', maxWidth: 800, margin: '0 auto', padding: '28px 20px 40px' };
+S.page = { minHeight: '100vh', maxWidth: 1000, margin: '0 auto', padding: '28px 20px 40px' };
 S.loading = { minHeight: '80vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16 };
 S.spinner = { width: 36, height: 36, borderRadius: '50%', border: '3px solid #1e1e32', borderTopColor: '#6366f1', animation: 'spin 0.8s linear infinite' };
 S.header = { display: 'flex', alignItems: 'center', gap: 16, marginBottom: 28 };
@@ -131,31 +230,8 @@ S.back = { fontSize: 13, color: '#71717a', textDecoration: 'none' };
 S.h1 = { fontSize: 24, fontWeight: 800, color: '#fff', margin: 0, flex: 1 };
 S.badge = { padding: '4px 14px', borderRadius: 20, background: '#16162a', border: '1px solid #27273d', fontSize: 13, color: '#818cf8' };
 S.adminLink = { padding: '6px 14px', borderRadius: 10, border: '1px solid #27273d', color: '#818cf8', fontSize: 12, textDecoration: 'none' };
-S.distBar = {
-  display: 'flex', alignItems: 'flex-end', gap: 4,
-  padding: '18px 22px', background: '#121224',
-  border: '1px solid #1e1e32', borderRadius: 16, marginBottom: 28, height: 80,
+S.logRow = {
+  display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px',
+  borderRadius: 10, background: '#121224', border: '1px solid #1e1e32',
 };
-S.distItem = {
-  display: 'flex', flexDirection: 'column', alignItems: 'center',
-  justifyContent: 'flex-end', minWidth: 32, transition: 'flex 0.3s ease',
-};
-S.distEmoji = { fontSize: 16, marginBottom: 4 };
-S.distCount = { fontSize: 11, color: '#52525b', fontWeight: 600 };
-S.timeline = { display: 'flex', flexDirection: 'column', gap: 12 };
-S.logCard = {
-  display: 'flex', gap: 16, padding: '18px 20px',
-  background: '#121224', border: '1px solid #1e1e32', borderRadius: 16,
-};
-S.logLeft = { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, minWidth: 60 };
-S.logEmoji = { fontSize: 30 };
-S.dateMain = { fontSize: 12, fontWeight: 600, color: '#d4d4d8', margin: 0, textAlign: 'center' };
-S.dateSub = { fontSize: 10, color: '#52525b', margin: 0 };
-S.logBody = { flex: 1, display: 'flex', flexDirection: 'column', gap: 6 };
-S.moodText = { fontSize: 15, fontWeight: 600, color: '#e4e4e7', margin: 0 };
-S.commentText = { fontSize: 13, color: '#a1a1aa', margin: 0, lineHeight: 1.6 };
-S.sliderRow = { display: 'flex', gap: 8, marginTop: 2 };
-S.sliderChip = { fontSize: 11, padding: '3px 10px', borderRadius: 20, background: '#1e1e32', color: '#a1a1aa' };
-S.logFooter = { marginTop: 4 };
-S.visBadge = { fontSize: 11, padding: '3px 10px', borderRadius: 20, fontWeight: 500 };
-S.empty = { textAlign: 'center', color: '#52525b', fontSize: 13, padding: 48 };
+S.empty = { textAlign: 'center', color: '#52525b', fontSize: 13, padding: 48, lineHeight: 1.5 };
