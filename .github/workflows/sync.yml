@@ -1,10 +1,7 @@
 name: Auto Sync Data
 
 on:
-  schedule:
-    # Every day at 6:00 AM UTC (14:00 Beijing time)
-    - cron: '0 6 * * *'
-  workflow_dispatch:
+  workflow_dispatch:  # 仅手动触发，不自动运行
 
 jobs:
   sync:

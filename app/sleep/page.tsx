@@ -7,7 +7,7 @@ import { isAuthenticated } from '@/lib/auth';
 
 interface SleepLog {
   id: string;
-  start_date: string;  // UTC time string from DB, e.g. "2026-06-27T01:03:00.000Z"
+  start_date: string;
   end_date: string;
   sleep_type: string;
   duration_minutes: number;
@@ -37,12 +37,10 @@ const TOP_PAD = 24;
 const BOT_PAD = 40;
 
 // 将 UTC 时间字符串转为北京时间
-// 返回 { beijingHr: number (0~23.999), beijingDateStr: string (YYYY-MM-DD) }
 function utcToBeijing(utcIsoStr: string): { beijingHr: number; beijingDateStr: string } {
   const d = new Date(utcIsoStr);
   const beijingMs = d.getTime() + 8 * 3600 * 1000;
   const beijingDate = new Date(beijingMs);
-  // 手动计算北京时间的小时（避免时区方法混淆）
   const msInDay = beijingMs % 86400000;
   const beijingHr = msInDay / 3600000;
   const y = beijingDate.getUTCFullYear();
@@ -54,7 +52,6 @@ function utcToBeijing(utcIsoStr: string): { beijingHr: number; beijingDateStr: s
 export default function SleepPage() {
   const [logs, setLogs] = useState<SleepLog[]>([]);
   const [loading, setLoading] = useState(true);
-  const [days, setDays] = useState(30);
   const [animPct, setAnimPct] = useState(0);
   const [tooltip, setTooltip] = useState<{
     x: number; y: number;
@@ -63,14 +60,16 @@ export default function SleepPage() {
   } | null>(null);
   const [hoverCol, setHoverCol] = useState<number | null>(null);
   const animRef = useRef<number>(0);
-  const svgRef = useRef<SVGSVGElement>(null);
+  const chartRef = useRef<HTMLDivElement>(null);
 
+  // ===== useEffect: 获取数据 =====
   useEffect(() => { fetchLogs(); }, []);
 
+  // ===== useEffect: 入场动画 =====
   useEffect(() => {
     if (loading) return;
     const t0 = performance.now();
-    const duration = 800;
+    const duration = 600;
     const tick = (now: number) => {
       const p = Math.min((now - t0) / duration, 1);
       setAnimPct(1 - Math.pow(1 - p, 3));
@@ -80,6 +79,7 @@ export default function SleepPage() {
     return () => cancelAnimationFrame(animRef.current || 0);
   }, [loading]);
 
+  // ===== 数据获取函数 =====
   const fetchLogs = async () => {
     const { data } = await supabase.from('health_sleep').select('*')
       .order('start_date', { ascending: true }).limit(5000);
@@ -87,15 +87,12 @@ export default function SleepPage() {
     setLoading(false);
   };
 
-  // 分组逻辑（睡眠日定义：昨天18:00 ~ 今天18:00 = 今天的睡眠日）
-  // beijingHr 范围 0~23.999
-  // 北京时间 >= 18:00 开始的 → 归到明天（因为 18:00 是新睡眠日的开始）
-  const dailySegments = useMemo(() => {
+  // ===== useMemo: 分组睡眠数据 =====
+  const dailySegmentsAll = useMemo(() => {
     if (!logs.length) return [];
     const map: Record<string, SleepLog[]> = {};
     for (const l of logs) {
       const { beijingHr, beijingDateStr } = utcToBeijing(l.start_date);
-      // 计算睡眠日：北京时间 >= 18:00 → 归到明天
       const dayDate = new Date(beijingDateStr + 'T00:00:00Z');
       if (beijingHr >= 18) {
         dayDate.setUTCDate(dayDate.getUTCDate() + 1);
@@ -106,7 +103,6 @@ export default function SleepPage() {
     }
     return Object.entries(map)
       .sort(([a], [b]) => a.localeCompare(b))
-      .slice(-days)
       .map(([day, segs]) => {
         const sorted = segs.sort((a, b) => a.start_date.localeCompare(b.start_date));
         const inBedMin = sorted
@@ -117,44 +113,41 @@ export default function SleepPage() {
           .reduce((s, x) => s + (x.duration_minutes || 0), 0);
         return { day, segs: sorted, totalMin: inBedMin, asleepMin };
       });
-  }, [logs, days]);
+  }, [logs]);
 
-  // 时间轴范围：北京时间 18:00 ~ 次日 18:00
-  const { axisStartHr, axisEndHr, axisHrs } = useMemo(() => {
-    // 固定范围：18 ~ 42（北京时间 18:00 ~ 次日 18:00）
-    let start = 18;
-    let end = 42;
-    // 如果数据超出范围，则扩展
-    for (const d of dailySegments) {
-      for (const seg of d.segs) {
-        const { beijingHr: sh } = utcToBeijing(seg.start_date);
-        const { beijingHr: eh } = utcToBeijing(seg.end_date);
-        // sh/eh 是 0~23.999，需要映射到时间轴坐标
-        // 时间轴显示 18:00 ~ 次日18:00，所以 <18 的时段 +24
-        const shAdj = sh >= 18 ? sh : sh + 24;
-        const ehAdj = eh >= 18 ? eh : eh + 24;
-        if (shAdj < start) start = Math.floor(shAdj);
-        if (ehAdj > end) end = Math.ceil(ehAdj);
-      }
-    }
-    // 强制至少显示到次日 12:00（即 end >= 36）
-    if (end < 36) end = 36;
-    return { axisStartHr: start, axisEndHr: end, axisHrs: end - start };
-  }, [dailySegments]);
-
+  // ===== useMemo: 统计数据 =====
   const stats = useMemo(() => {
-    if (!dailySegments.length) return null;
-    const t = dailySegments.map(d => d.totalMin);
-    const a = dailySegments.map(d => d.asleepMin);
+    if (!dailySegmentsAll.length) return null;
+    const t = dailySegmentsAll.map(d => d.totalMin);
+    const a = dailySegmentsAll.map(d => d.asleepMin);
     return {
       avgTotal: Math.round(t.reduce((s, x) => s + x, 0) / t.length),
       avgAsleep: Math.round(a.reduce((s, x) => s + x, 0) / a.length),
       maxTotal: Math.max(...t),
       minTotal: Math.min(...t),
     };
-  }, [dailySegments]);
+  }, [dailySegmentsAll]);
 
-  // 将 UTC 时间字符串转为 SVG Y 坐标
+  // ===== useMemo: 时间轴范围（根据实际数据动态计算）=====
+  const { axisStartHr, axisEndHr, axisHrs } = useMemo(() => {
+    if (!dailySegmentsAll.length) return { axisStartHr: 18, axisEndHr: 42, axisHrs: 24 };
+    let minHr = 24, maxHr = 0;
+    for (const d of dailySegmentsAll) {
+      for (const seg of d.segs) {
+        const { beijingHr: sh } = utcToBeijing(seg.start_date);
+        const { beijingHr: eh } = utcToBeijing(seg.end_date);
+        const shAdj = sh >= 18 ? sh : sh + 24;
+        const ehAdj = eh >= 18 ? eh : eh + 24;
+        if (shAdj < minHr) minHr = shAdj;
+        if (ehAdj > maxHr) maxHr = ehAdj;
+      }
+    }
+    const start = Math.max(0, Math.floor(minHr) - 1);
+    const end = Math.min(48, Math.ceil(maxHr) + 1);
+    return { axisStartHr: start, axisEndHr: end, axisHrs: end - start };
+  }, [dailySegmentsAll]);
+
+  // ===== useCallback: 时间转 Y 坐标 =====
   const timeToY = useCallback((utcIso: string, svgH: number) => {
     const { beijingHr } = utcToBeijing(utcIso);
     const hr = beijingHr >= axisStartHr ? beijingHr : beijingHr + 24;
@@ -162,12 +155,23 @@ export default function SleepPage() {
     return TOP_PAD + ((hr - axisStartHr) / axisHrs) * plotH;
   }, [axisStartHr, axisHrs]);
 
-  // 将 axis 小时（可能 >=24）转为 Y 坐标
   const axisHrToY = useCallback((hr: number, svgH: number) => {
     const plotH = svgH - TOP_PAD - BOT_PAD;
     return TOP_PAD + ((hr - axisStartHr) / axisHrs) * plotH;
   }, [axisStartHr, axisHrs]);
 
+  // ===== useEffect: 自动滚动到最右侧（必须放在所有 useMemo 之后）=====
+  useEffect(() => {
+    if (!dailySegmentsAll.length || !chartRef.current) return;
+    const el = chartRef.current;
+    // 等 DOM 更新 + 动画结束后滚动
+    const timer = setTimeout(() => {
+      el.scrollLeft = el.scrollWidth - el.clientWidth;
+    }, 700);
+    return () => clearTimeout(timer);
+  }, [dailySegmentsAll.length]);
+
+  // ===== 普通函数 =====
   const fmtT = (iso: string) => {
     const { beijingHr } = utcToBeijing(iso);
     const displayHr = Math.floor(beijingHr);
@@ -180,40 +184,42 @@ export default function SleepPage() {
     return `${h}h${rem ? ` ${rem}m` : ''}`;
   };
 
+  // ===== 常量 =====
   const svgH = 600;
   const plotH = svgH - TOP_PAD - BOT_PAD;
-  const svgW = Math.max(TIME_AXIS_W + dailySegments.length * COL_W + 64, 400);
+  const svgW = Math.max(dailySegmentsAll.length * COL_W + 64, 400);
 
-  // 时间刻度：每小时一个
   const ticks: { hr: number; labelHr: number }[] = [];
   for (let h = axisStartHr; h <= axisEndHr; h++) {
     ticks.push({ hr: h, labelHr: h >= 24 ? h - 24 : h });
   }
 
+  // ===== 鼠标交互 =====
   const onMove = useCallback((e: React.MouseEvent) => {
-    if (!svgRef.current || !dailySegments.length) { setTooltip(null); setHoverCol(null); return; }
-    const r = svgRef.current.getBoundingClientRect();
-    const mx = e.clientX - r.left, my = e.clientY - r.top;
-    const padL = TIME_AXIS_W + 20;
-    const ci = Math.floor((mx - padL) / COL_W);
-    if (ci < 0 || ci >= dailySegments.length) { setTooltip(null); setHoverCol(null); return; }
+    if (!chartRef.current || !dailySegmentsAll.length) { setTooltip(null); setHoverCol(null); return; }
+    const r = chartRef.current.getBoundingClientRect();
+    const mx = e.clientX - r.left + chartRef.current.scrollLeft;
+    const my = e.clientY - r.top;
+    const ci = Math.floor(mx / COL_W);
+    if (ci < 0 || ci >= dailySegmentsAll.length) { setTooltip(null); setHoverCol(null); return; }
     setHoverCol(ci);
-    const sd = dailySegments[ci];
+    const sd = dailySegmentsAll[ci];
     for (const seg of sd.segs) {
       const y1 = timeToY(seg.start_date, svgH), y2 = timeToY(seg.end_date, svgH);
       const cy = Math.max(y1, TOP_PAD), ch = Math.min(y2, svgH - BOT_PAD) - cy;
       if (ch <= 0) continue;
-      const sx = padL + ci * COL_W + 4, sw = COL_W - 12;
+      const sx = ci * COL_W + 4, sw = COL_W - 12;
       if (mx >= sx && mx <= sx + sw && my >= cy && my <= cy + ch) {
         setTooltip({ x: e.clientX, y: e.clientY, day: sd.day, type: seg.sleep_type, start: seg.start_date, end: seg.end_date, dur: seg.duration_minutes });
         return;
       }
     }
     setTooltip({ x: e.clientX, y: e.clientY, day: sd.day, type: '_summary', start: '', end: '', dur: sd.totalMin });
-  }, [dailySegments, timeToY, svgH]);
+  }, [dailySegmentsAll, timeToY, svgH]);
 
   const onLeave = () => { setTooltip(null); setHoverCol(null); };
 
+  // ===== 渲染 =====
   if (loading) return <div style={S.loading}><div style={S.spinner} /><p>加载中...</p></div>;
 
   return (
@@ -221,7 +227,7 @@ export default function SleepPage() {
       <header style={S.header}>
         <Link href="/" style={S.back}>← 首页</Link>
         <h1 style={S.h1}>😴 睡眠数据</h1>
-        <span style={S.badge}>{logs.length} 条</span>
+        <span style={S.badge}>{logs.length} 条 · {dailySegmentsAll.length} 天</span>
         {isAuthenticated() && <Link href="/admin" style={S.adminLink}>管理 →</Link>}
       </header>
 
@@ -237,110 +243,113 @@ export default function SleepPage() {
         </div>
       )}
 
-      <div style={S.filterRow}>
-        {[7, 14, 30, 60, 90, 180, 365].map(d => (
-          <button key={d} onClick={() => setDays(d)} style={S.btn(d === days)}>{d}天</button>
-        ))}
-        <span style={{ fontSize: 11, color: '#52525b', marginLeft: 'auto' }}>{dailySegments.length} 天</span>
-      </div>
+      {dailySegmentsAll.length > 0 && (
+        <div style={S.chartOuter}>
+          {/* 固定时间轴（左侧） */}
+          <div style={S.timeAxisCol}>
+            <svg width={TIME_AXIS_W} height={svgH} style={{ display: 'block' }}>
+              {ticks.map(t => {
+                const y = axisHrToY(t.hr, svgH);
+                const isMidnight = t.labelHr === 0;
+                return (
+                  <g key={t.hr}>
+                    <text x={TIME_AXIS_W - 4} y={y + 3.5} textAnchor="end"
+                      fontSize={10} fill={isMidnight ? '#818cf8' : '#a1a1aa'} fontWeight={isMidnight ? 700 : 400}>
+                      {`${t.labelHr}:00`}
+                    </text>
+                    {isMidnight && (
+                      <text x={4} y={y - 6} fontSize={8} fill="#818cf8" fontWeight={600}>午夜</text>
+                    )}
+                  </g>
+                );
+              })}
+            </svg>
+          </div>
 
-      {dailySegments.length > 0 && (
-        <div style={S.chartWrap}>
-          <svg ref={svgRef as any} width={svgW} height={svgH}
-            style={{ display: 'block', minWidth: '100%', fontFamily: 'system-ui,-apple-system,sans-serif' }}
-            onMouseMove={onMove} onMouseLeave={onLeave}
+          {/* 可滚动图表区（右侧） */}
+          <div
+            ref={chartRef}
+            style={S.chartScroll}
+            onMouseMove={onMove}
+            onMouseLeave={onLeave}
           >
-            <defs>
-              <linearGradient id="gradInBed" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#7c3aed" stopOpacity="0.2" />
-                <stop offset="100%" stopColor="#7c3aed" stopOpacity="0.45" />
-              </linearGradient>
-            </defs>
+            <svg width={svgW} height={svgH} style={{ display: 'block', opacity: animPct, transition: 'opacity 0.5s ease' }}>
+              <defs>
+                <linearGradient id="gradInBed" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#7c3aed" stopOpacity="0.2" />
+                  <stop offset="100%" stopColor="#7c3aed" stopOpacity="0.45" />
+                </linearGradient>
+              </defs>
 
-            {/* 时间轴刻度 */}
-            {ticks.map(t => {
-              const y = axisHrToY(t.hr, svgH);
-              const isMidnight = t.labelHr === 0;
-              return (
-                <g key={t.hr}>
-                  <text x={TIME_AXIS_W - 4} y={y + 3.5} textAnchor="end"
-                    fontSize={10} fill={isMidnight ? '#818cf8' : '#a1a1aa'} fontWeight={isMidnight ? 700 : 400}>
-                    {`${t.labelHr}:00`}
-                  </text>
-                  <line x1={TIME_AXIS_W + 2} y1={y} x2={svgW - 32} y2={y}
+              {/* 网格线 */}
+              {ticks.map(t => {
+                const y = axisHrToY(t.hr, svgH);
+                const isMidnight = t.labelHr === 0;
+                return (
+                  <line key={t.hr}
+                    x1={0} y1={y} x2={svgW} y2={y}
                     stroke={isMidnight ? '#3b3b54' : '#1e1e32'}
                     strokeWidth={isMidnight ? 1.2 : 0.5}
-                    strokeDasharray={isMidnight ? '6 3' : (t.hr % 2 === 0 ? '3 3' : undefined)} />
-                  {isMidnight && (
-                    <text x={TIME_AXIS_W + 6} y={y - 6} fontSize={8} fill="#818cf8" fontWeight={600}>午夜</text>
-                  )}
-                </g>
-              );
-            })}
+                    strokeDasharray={isMidnight ? '6 3' : (t.hr % 2 === 0 ? '3 3' : undefined)}
+                  />
+                );
+              })}
 
-            {/* 入场遮罩 */}
-            {animPct < 1 && (
-              <rect x={TIME_AXIS_W + 20} y={TOP_PAD}
-                width={(svgW - TIME_AXIS_W - 44) * (1 - animPct)} height={plotH} fill="#0c0c1a" />
-            )}
+              {/* 每日列 */}
+              {dailySegmentsAll.map((d, i) => {
+                const cx = i * COL_W + COL_W / 2;
+                const isHover = hoverCol === i;
+                return (
+                  <g key={d.day}>
+                    <rect x={i * COL_W} y={TOP_PAD} width={COL_W - 4} height={plotH}
+                      rx={6} fill={isHover ? '#16162e' : 'transparent'}
+                      stroke={isHover ? '#2a2a50' : 'transparent'} strokeWidth={isHover ? 1 : 0} />
 
-            {/* 每日列 */}
-            {dailySegments.map((d, i) => {
-              const cx = TIME_AXIS_W + 20 + i * COL_W + COL_W / 2;
-              const isHover = hoverCol === i;
-              return (
-                <g key={d.day} style={{
-                  opacity: animPct,
-                  transition: `opacity 0.3s ease ${i * 18}ms`,
-                }}>
-                  <rect x={TIME_AXIS_W + 20 + i * COL_W} y={TOP_PAD} width={COL_W - 4} height={plotH}
-                    rx={6} fill={isHover ? '#16162e' : 'transparent'}
-                    stroke={isHover ? '#2a2a50' : 'transparent'} strokeWidth={isHover ? 1 : 0} />
+                    {d.segs.map((seg, j) => {
+                      const y1 = timeToY(seg.start_date, svgH), y2 = timeToY(seg.end_date, svgH);
+                      const cy = Math.max(y1, TOP_PAD), ch = Math.min(y2, svgH - BOT_PAD) - cy;
+                      if (ch <= 0) return null;
+                      const isBed = seg.sleep_type === 'in_bed';
+                      return (
+                        <rect key={j}
+                          x={i * COL_W + 4} y={cy} width={COL_W - 12} height={ch}
+                          rx={3}
+                          fill={isBed ? 'url(#gradInBed)' : TYPE_COLORS[seg.sleep_type]}
+                          opacity={isBed ? 0.65 : 0.85}
+                        />
+                      );
+                    })}
 
-                  {d.segs.map((seg, j) => {
-                    const y1 = timeToY(seg.start_date, svgH), y2 = timeToY(seg.end_date, svgH);
-                    const cy = Math.max(y1, TOP_PAD), ch = Math.min(y2, svgH - BOT_PAD) - cy;
-                    if (ch <= 0) return null;
-                    const isBed = seg.sleep_type === 'in_bed';
-                    return (
-                      <rect key={j}
-                        x={TIME_AXIS_W + 20 + i * COL_W + 4}
-                        y={cy} width={COL_W - 12} height={ch}
-                        rx={3}
-                        fill={isBed ? 'url(#gradInBed)' : TYPE_COLORS[seg.sleep_type]}
-                        opacity={isBed ? 0.65 : 0.85}
-                      />
-                    );
-                  })}
-
-                  <text x={cx} y={svgH - 12} textAnchor="middle"
-                    fontSize={9} fontWeight={500}
-                    fill={isHover ? '#c4c4cf' : '#52525b'}>
-                    {d.day.slice(5)}
-                  </text>
-
-                  {isHover && (
-                    <text x={cx} y={TOP_PAD + 12} textAnchor="middle"
-                      fontSize={10} fontWeight={700} fill="#e4e4e7">
-                      {fmtH(d.asleepMin)}
+                    <text x={cx} y={svgH - 12} textAnchor="middle"
+                      fontSize={9} fontWeight={500}
+                      fill={isHover ? '#c4c4cf' : '#52525b'}>
+                      {d.day.slice(5)}
                     </text>
-                  )}
-                </g>
-              );
-            })}
 
-            {/* 今日线 */}
-            {(() => {
-              const today = new Date().toISOString().slice(0, 10);
-              const idx = dailySegments.findIndex(d => d.day === today);
-              if (idx < 0) return null;
-              const cx = TIME_AXIS_W + 20 + idx * COL_W + COL_W / 2;
-              return <line x1={cx} y1={TOP_PAD} x2={cx} y2={svgH - BOT_PAD}
-                stroke="#f59e0b" strokeWidth={1.5} strokeDasharray="4 3" opacity={0.5} />;
-            })()}
-          </svg>
+                    {isHover && (
+                      <text x={cx} y={TOP_PAD + 12} textAnchor="middle"
+                        fontSize={10} fontWeight={700} fill="#e4e4e7">
+                        {fmtH(d.asleepMin)}
+                      </text>
+                    )}
+                  </g>
+                );
+              })}
 
-          <div style={S.legend}>
+              {/* 今日线 */}
+              {(() => {
+                const today = new Date().toISOString().slice(0, 10);
+                const idx = dailySegmentsAll.findIndex(d => d.day === today);
+                if (idx < 0) return null;
+                const cx = idx * COL_W + COL_W / 2;
+                return <line x1={cx} y1={TOP_PAD} x2={cx} y2={svgH - BOT_PAD}
+                  stroke="#f59e0b" strokeWidth={1.5} strokeDasharray="4 3" opacity={0.5} />;
+              })()}
+            </svg>
+          </div>
+
+          {/* 图例（固定在底部） */}
+          <div style={S.legendBar}>
             {Object.entries(TYPE_LABELS).map(([k, v]) => (
               <div key={k} style={S.legendItem}>
                 <span style={{
@@ -355,29 +364,14 @@ export default function SleepPage() {
         </div>
       )}
 
-      {!dailySegments.length && <p style={S.empty}>暂无数据，请先通过 iOS 快捷指令同步</p>}
-
-      <div style={{ marginTop: 24 }}>
-        <h3 style={S.sectionTitle}>最近记录</h3>
-        <div style={S.logList}>
-          {logs.slice(-30).reverse().map(log => (
-            <div key={log.id} style={{ ...S.logRow, opacity: animPct, transform: `translateX(${(1 - animPct) * -16}px)`, transition: 'all 0.4s ease 0.2s' }}>
-              <span style={S.logDate}>{utcToBeijing(log.start_date).beijingDateStr} {fmtT(log.start_date)}</span>
-              <span style={{ fontSize: 11, color: TYPE_COLORS[log.sleep_type], minWidth: 36 }}>{TYPE_LABELS[log.sleep_type]}</span>
-              <span style={{ fontSize: 11, color: '#a1a1aa' }}>{fmtT(log.start_date)}–{fmtT(log.end_date)}</span>
-              <span style={{ fontSize: 11, color: '#818cf8', fontWeight: 600 }}>{log.duration_minutes}min</span>
-            </div>
-          ))}
-        </div>
-      </div>
+      {!dailySegmentsAll.length && <p style={S.empty}>暂无数据，请先通过 iOS 快捷指令同步</p>}
 
       {/* Tooltip */}
       {tooltip && tooltip.type !== '_summary' && (
         <div style={{
-          position: 'fixed', left: tooltip.x + 18, top: tooltip.y - 6,
-          background: '#181830', border: '1px solid #333355', borderRadius: 12,
-          padding: '10px 14px', fontSize: 12, color: '#e4e4e7', pointerEvents: 'none',
-          zIndex: 9999, boxShadow: '0 8px 36px rgba(0,0,0,0.55)', lineHeight: 1.75, whiteSpace: 'nowrap',
+          ...S.tooltip,
+          left: tooltip.x + 18,
+          top: tooltip.y - 6,
         }}>
           <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 2, color: TYPE_COLORS[tooltip.type] }}>
             {TYPE_LABELS[tooltip.type]}
@@ -389,13 +383,12 @@ export default function SleepPage() {
       )}
       {tooltip && tooltip.type === '_summary' && (
         <div style={{
-          position: 'fixed', left: tooltip.x + 18, top: tooltip.y - 6,
-          background: '#181830', border: '1px solid #333355', borderRadius: 12,
-          padding: '10px 14px', fontSize: 12, color: '#e4e4e7', pointerEvents: 'none',
-          zIndex: 9999, boxShadow: '0 8px 36px rgba(0,0,0,0.55)', lineHeight: 1.75, whiteSpace: 'nowrap',
+          ...S.tooltip,
+          left: tooltip.x + 18,
+          top: tooltip.y - 6,
         }}>
           <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 2 }}>{tooltip.day}</div>
-          <div>睡眠 <span style={{ color: '#818cf8', fontWeight: 600 }}>{fmtH(dailySegments.find(d => d.day === tooltip.day)?.asleepMin || 0)}</span></div>
+          <div>睡眠 <span style={{ color: '#818cf8', fontWeight: 600 }}>{fmtH(dailySegmentsAll.find(d => d.day === tooltip.day)?.asleepMin || 0)}</span></div>
           <div>在床 <span style={{ fontWeight: 600 }}>{fmtH(tooltip.dur)}</span></div>
         </div>
       )}
@@ -416,18 +409,15 @@ const S = {
   statCard: { padding: '14px 16px', borderRadius: 14, background: '#121224', border: '1px solid #1e1e32', textAlign: 'center' } as React.CSSProperties,
   statLabel: { fontSize: 11, color: '#a1a1aa', marginBottom: 6 } as React.CSSProperties,
   statValue: { fontSize: 22, fontWeight: 800, color: '#e4e4e7' } as React.CSSProperties,
-  filterRow: { display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' } as React.CSSProperties,
-  btn: (a: boolean): React.CSSProperties => ({
-    padding: '5px 14px', borderRadius: 14, fontSize: 12, outline: 'none' as any,
-    border: `1px solid ${a ? '#6366f1' : 'rgba(255,255,255,0.12)'}`,
-    background: a ? '#6366f118' : 'transparent', color: a ? '#a5b4fc' : '#a1a1aa', cursor: 'pointer',
-  }),
-  chartWrap: { overflowX: 'auto', borderRadius: 18, border: '1px solid #1e1e32', background: '#08081a', marginBottom: 32, paddingBottom: 12 } as React.CSSProperties,
-  legend: { display: 'flex', gap: 16, padding: '10px 24px 14px', flexWrap: 'wrap', fontSize: 11, color: '#a1a1aa' } as React.CSSProperties,
+  // 外层容器：固定时间轴 + 可滚动图表
+  chartOuter: { borderRadius: 18, border: '1px solid #1e1e32', background: '#08081a', marginBottom: 32, overflow: 'hidden' } as React.CSSProperties,
+  // 固定时间轴列
+  timeAxisCol: { float: 'left', width: TIME_AXIS_W, height: 620, position: 'relative' as const, zIndex: 2, background: '#08081a', borderRight: '1px solid #1e1e32' } as React.CSSProperties,
+  // 可滚动图表区（留底部 20px 给滚动条，不挡住日期标签）
+  chartScroll: { overflowX: 'auto', overflowY: 'hidden', height: 620, marginLeft: TIME_AXIS_W, paddingBottom: 20 } as React.CSSProperties,
+  // 底部图例
+  legendBar: { display: 'flex', gap: 16, padding: '10px 24px 14px', flexWrap: 'wrap', fontSize: 11, color: '#a1a1aa', borderTop: '1px solid #1e1e32', background: '#08081a' } as React.CSSProperties,
   legendItem: { display: 'flex', alignItems: 'center', gap: 6 } as React.CSSProperties,
   empty: { textAlign: 'center', color: '#52525b', fontSize: 13, padding: 56, lineHeight: 1.5 } as React.CSSProperties,
-  sectionTitle: { fontSize: 15, fontWeight: 600, color: '#e4e4e7', margin: '0 0 14px' } as React.CSSProperties,
-  logList: { display: 'flex', flexDirection: 'column', gap: 6 } as React.CSSProperties,
-  logRow: { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', borderRadius: 12, background: '#121224', border: '1px solid #1e1e32' } as React.CSSProperties,
-  logDate: { fontSize: 10, color: '#52525b', fontFamily: 'monospace', minWidth: 90 } as React.CSSProperties,
+  tooltip: { position: 'fixed', background: '#181830', border: '1px solid #333355', borderRadius: 12, padding: '10px 14px', fontSize: 12, color: '#e4e4e7', pointerEvents: 'none', zIndex: 9999, boxShadow: '0 8px 36px rgba(0,0,0,0.55)', lineHeight: 1.75, whiteSpace: 'nowrap' } as React.CSSProperties,
 };
