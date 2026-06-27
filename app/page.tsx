@@ -171,17 +171,17 @@ export default function DashboardPage() {
           </Link>
 
           {/* 睡眠数据卡片 */}
-          <Link href="/sleep" style={{ textDecoration: 'none' }}>
-            <div style={{
-              padding: 16, borderRadius: 14, background: C.surface, border: '1px solid ' + C.border,
-              textAlign: 'center', transition: 'all 0.2s', cursor: 'pointer',
-            }}>
-              <div style={{ fontSize: 28, marginBottom: 8 }}>😴</div>
-              <div style={{ fontSize: 24, fontWeight: 800, color: C.text, marginBottom: 4 }}>{sleepAvg}h</div>
-              <div style={{ fontSize: 12, color: C.textSec, marginBottom: 8 }}>平均睡眠</div>
-              <div style={{ fontSize: 11, color: C.accent }}>查看详情 →</div>
-            </div>
-          </Link>
+          {/*<Link href="/sleep" style={{ textDecoration: 'none' }}>*/}
+          {/*  <div style={{*/}
+          {/*    padding: 16, borderRadius: 14, background: C.surface, border: '1px solid ' + C.border,*/}
+          {/*    textAlign: 'center', transition: 'all 0.2s', cursor: 'pointer',*/}
+          {/*  }}>*/}
+          {/*    <div style={{ fontSize: 28, marginBottom: 8 }}>😴</div>*/}
+          {/*    <div style={{ fontSize: 24, fontWeight: 800, color: C.text, marginBottom: 4 }}>{sleepAvg}h</div>*/}
+          {/*    <div style={{ fontSize: 12, color: C.textSec, marginBottom: 8 }}>平均睡眠</div>*/}
+          {/*    <div style={{ fontSize: 11, color: C.accent }}>查看详情 →</div>*/}
+          {/*  </div>*/}
+          {/*</Link>*/}
         </div>
       </section>
 
