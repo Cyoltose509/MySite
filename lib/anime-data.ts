@@ -266,6 +266,6 @@ function saveCoverCache(title: string, url: string) {
 export function getAnimeQuartzLink(anime: AnimeItem): string | null {
   if (!anime.filePath) return null;
   // filePath like "番剧大全/xxx.md" → strip .md
-  const slug = anime.filePath.replace(/\.md$/i, '');
+  const slug = anime.filePath.substring(7).replace(/\.md$/i, '');
   return `https://cyoltose509.github.io/my-anime-list/${decodeURIComponent(slug)}`;
 }

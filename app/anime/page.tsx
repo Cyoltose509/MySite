@@ -272,7 +272,7 @@ export default function AnimePage() {
                 )}
                 <div style={{ display: 'flex', gap: 16, marginTop: 8 }}>
                   {quartzLink && (
-                    <a href={quartzLink} target="_blank" style={{ color: C.accentLt, textDecoration: 'none', fontSize: 13 }}>📂 在 my-anime-list 查看</a>
+                    <a href={quartzLink} target="_blank" style={{ color: C.accentLt, textDecoration: 'none', fontSize: 13 }}>📂 在 Quartz 查看</a>
                   )}
                   {detailAnime.source && (
                     <a href={detailAnime.source} target="_blank" style={{ color: C.accentLt, textDecoration: 'none', fontSize: 13 }}>🔗 来源链接</a>
