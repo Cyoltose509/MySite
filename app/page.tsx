@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import Image from 'next/image';
 import { supabase } from '@/lib/supabase';
 import { isAuthenticated } from '@/lib/auth';
+import { withBasePath } from '@/lib/base-path';
 import { C, pageStyle, headerStyle, h1Style, backLinkStyle, loadingContainerStyle, spinnerStyle, loadingTextStyle } from '@/lib/card-styles';
 
 interface MoodLog {
@@ -100,7 +100,7 @@ export default function DashboardPage() {
     <div style={pageStyle}>
       <header style={headerStyle}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <Image src="/avatar.png" alt="avatar" width={48} height={48}
+          <img src={withBasePath('/avatar.png')} alt="avatar" width={48} height={48}
             style={{ borderRadius: 14, border: '2px solid ' + C.accent }} />
           <div>
             <h1 style={{ fontSize: 26, fontWeight: 800, color: C.text, margin: 0, letterSpacing: '-0.5' }}>

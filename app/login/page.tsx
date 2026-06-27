@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import Image from 'next/image';
+import { withBasePath } from '@/lib/base-path';
 import Link from 'next/link';
 import { hashPassword, setSession } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
@@ -44,7 +44,7 @@ export default function LoginPage() {
   return (
     <div style={S.page}>
       <div style={S.card}>
-        <Image src="/avatar.png" alt="" width={72} height={72}
+        <img src={withBasePath('/avatar.png')} alt="" width={72} height={72}
           style={{ borderRadius: 20, border: '2px solid #6366f1', marginBottom: 16 }} />
         <h1 style={S.title}>DataHub</h1>
         <p style={S.subtitle}>个人数据中枢 · 管理入口</p>

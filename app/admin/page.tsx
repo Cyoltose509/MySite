@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { isAuthenticated, clearSession } from '@/lib/auth';
-import Image from 'next/image';
+import { withBasePath } from '@/lib/base-path';
 import { SyncPanel } from '@/components/admin/SyncPanel';
 import { MusicTagEditor } from '@/components/admin/MusicTagEditor';
 import { MoodLogger } from '@/components/admin/MoodLogger';
@@ -56,7 +56,7 @@ export default function AdminPage() {
       {/* Top Nav */}
       <nav style={styles.nav}>
         <div style={styles.navLeft}>
-          <Image src="/avatar.png" alt="avatar" width={36} height={36}
+          <img src={withBasePath('/avatar.png')} alt="avatar" width={36} height={36}
             style={{ borderRadius: 10, border: '2px solid #6366f1' }} />
           <span style={styles.brand}>DataHub · 管理后台</span>
         </div>
