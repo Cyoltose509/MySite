@@ -217,7 +217,7 @@ export function MusicTagEditor() {
                                     {m.album && <div style={cardAlbumStyle}>{m.album}</div>}
                                     <div style={{marginTop: 6, display: 'flex', gap: 4, flexWrap: 'wrap'}}>
                                         {tagged ? (
-                                            <span style={badgeStyle('rgba(99,102,241,0.18)')}>已标记</span>
+                                            <span style={badgeStyle('rgba(99,102,241,1)')}>已标记</span>
                                         ) : (
                                             <span style={badgeStyle('rgba(255,255,255,0.06)')}>未标记</span>
                                         )}
