@@ -59,6 +59,7 @@ export default function SleepPage() {
     start: string; end: string; dur: number;
   } | null>(null);
   const [hoverCol, setHoverCol] = useState<number | null>(null);
+  const [highlightDay, setHighlightDay] = useState<string | null>(null);
   const animRef = useRef<number>(0);
   const chartRef = useRef<HTMLDivElement>(null);
 
@@ -105,9 +106,10 @@ export default function SleepPage() {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([day, segs]) => {
         const sorted = segs.sort((a, b) => a.start_date.localeCompare(b.start_date));
-        const inBedMin = sorted
+        const inBedDurs = sorted
           .filter(x => x.sleep_type === 'in_bed')
-          .reduce((s, x) => s + (x.duration_minutes || 0), 0);
+          .map(x => x.duration_minutes || 0);
+        const inBedMin = inBedDurs.length ? Math.max(...inBedDurs) : 0;
         const asleepMin = sorted
           .filter(x => !['in_bed', 'asleep_awake'].includes(x.sleep_type))
           .reduce((s, x) => s + (x.duration_minutes || 0), 0);
@@ -115,16 +117,21 @@ export default function SleepPage() {
       });
   }, [logs]);
 
-  // ===== useMemo: 统计数据 =====
+  // ===== useMemo: 统计数据（最长/最短用睡眠时间）=====
   const stats = useMemo(() => {
     if (!dailySegmentsAll.length) return null;
-    const t = dailySegmentsAll.map(d => d.totalMin);
-    const a = dailySegmentsAll.map(d => d.asleepMin);
+    const withAsleep = dailySegmentsAll.filter(d => d.asleepMin > 0);
+    const withBed = dailySegmentsAll.filter(d => d.totalMin > 0);
+    if (!withAsleep.length) return null;
+    const maxDay = withAsleep.reduce((a, b) => a.asleepMin > b.asleepMin ? a : b);
+    const minDay = withAsleep.reduce((a, b) => a.asleepMin < b.asleepMin ? a : b);
     return {
-      avgTotal: Math.round(t.reduce((s, x) => s + x, 0) / t.length),
-      avgAsleep: Math.round(a.reduce((s, x) => s + x, 0) / a.length),
-      maxTotal: Math.max(...t),
-      minTotal: Math.min(...t),
+      avgTotal: withBed.length ? Math.round(withBed.reduce((s, x) => s + x.totalMin, 0) / withBed.length) : 0,
+      avgAsleep: Math.round(withAsleep.reduce((s, x) => s + x.asleepMin, 0) / withAsleep.length),
+      maxAsleep: maxDay.asleepMin,
+      minAsleep: minDay.asleepMin,
+      maxDay: maxDay.day,
+      minDay: minDay.day,
     };
   }, [dailySegmentsAll]);
 
@@ -194,7 +201,16 @@ export default function SleepPage() {
     ticks.push({ hr: h, labelHr: h >= 24 ? h - 24 : h });
   }
 
-  // ===== 鼠标交互 =====
+  // ===== 跳到指定天 =====
+  const scrollToDay = useCallback((day: string | null) => {
+    setHighlightDay(day);
+    if (!day || !chartRef.current) return;
+    const idx = dailySegmentsAll.findIndex(d => d.day === day);
+    if (idx < 0) return;
+    const el = chartRef.current;
+    const targetLeft = idx * COL_W + COL_W / 2 - el.clientWidth / 2;
+    el.scrollTo({ left: Math.max(0, targetLeft), behavior: 'smooth' });
+  }, [dailySegmentsAll]);
   const onMove = useCallback((e: React.MouseEvent) => {
     if (!chartRef.current || !dailySegmentsAll.length) { setTooltip(null); setHoverCol(null); return; }
     const r = chartRef.current.getBoundingClientRect();
@@ -233,11 +249,22 @@ export default function SleepPage() {
 
       {stats && (
         <div style={S.statsGrid}>
-          {[['平均在床', stats.avgTotal], ['平均睡眠', stats.avgAsleep], ['最长', stats.maxTotal], ['最短', stats.minTotal]]
-            .map(([l, v], i) => (
-              <div key={i} style={{ ...S.statCard, opacity: animPct, transform: `translateY(${(1 - animPct) * 16}px)`, transition: `all ${0.35 + i * 0.07}s ease` }}>
+          {([['平均在床', stats.avgTotal, null], ['平均睡眠', stats.avgAsleep, null], ['最长睡眠', stats.maxAsleep, stats.maxDay], ['最短睡眠', stats.minAsleep, stats.minDay]] as [string, number, string | null][])
+            .map(([l, v, day], i) => (
+              <div key={i}
+                style={{
+                  ...S.statCard,
+                  opacity: animPct,
+                  transform: `translateY(${(1 - animPct) * 16}px)`,
+                  transition: `all ${0.35 + i * 0.07}s ease`,
+                  cursor: day ? 'pointer' : 'default',
+                  ...(highlightDay && day && highlightDay !== day ? { opacity: 0.4 } : {}),
+                }}
+                onClick={() => day && scrollToDay(highlightDay === day ? null : day)}
+                title={day ? `点击跳转到 ${day}` : undefined}>
                 <div style={S.statLabel}>{l}</div>
                 <div style={S.statValue}>{fmtH(typeof v === 'number' ? v : 0)}</div>
+                {day && <div style={S.statDate}>{day}</div>}
               </div>
             ))}
         </div>
@@ -299,11 +326,15 @@ export default function SleepPage() {
               {dailySegmentsAll.map((d, i) => {
                 const cx = i * COL_W + COL_W / 2;
                 const isHover = hoverCol === i;
+                const isHighlight = highlightDay === d.day;
+                const isDim = highlightDay && !isHighlight;
                 return (
-                  <g key={d.day}>
+                  <g key={d.day} opacity={isDim ? 0.3 : 1}>
                     <rect x={i * COL_W} y={TOP_PAD} width={COL_W - 4} height={plotH}
-                      rx={6} fill={isHover ? '#16162e' : 'transparent'}
-                      stroke={isHover ? '#2a2a50' : 'transparent'} strokeWidth={isHover ? 1 : 0} />
+                      rx={6}
+                      fill={isHighlight ? '#1a1a3a' : isHover ? '#16162e' : 'transparent'}
+                      stroke={isHighlight ? '#f59e0b' : isHover ? '#2a2a50' : 'transparent'}
+                      strokeWidth={isHighlight ? 1.5 : isHover ? 1 : 0} />
 
                     {d.segs.map((seg, j) => {
                       const y1 = timeToY(seg.start_date, svgH), y2 = timeToY(seg.end_date, svgH);
@@ -321,12 +352,12 @@ export default function SleepPage() {
                     })}
 
                     <text x={cx} y={svgH - 12} textAnchor="middle"
-                      fontSize={9} fontWeight={500}
-                      fill={isHover ? '#c4c4cf' : '#52525b'}>
+                      fontSize={isHighlight ? 11 : 9} fontWeight={isHighlight ? 700 : 500}
+                      fill={isHighlight ? '#f59e0b' : isHover ? '#c4c4cf' : '#52525b'}>
                       {d.day.slice(5)}
                     </text>
 
-                    {isHover && (
+                    {(isHover || isHighlight) && (
                       <text x={cx} y={TOP_PAD + 12} textAnchor="middle"
                         fontSize={10} fontWeight={700} fill="#e4e4e7">
                         {fmtH(d.asleepMin)}
@@ -409,6 +440,7 @@ const S = {
   statCard: { padding: '14px 16px', borderRadius: 14, background: '#121224', border: '1px solid #1e1e32', textAlign: 'center' } as React.CSSProperties,
   statLabel: { fontSize: 11, color: '#a1a1aa', marginBottom: 6 } as React.CSSProperties,
   statValue: { fontSize: 22, fontWeight: 800, color: '#e4e4e7' } as React.CSSProperties,
+  statDate: { fontSize: 10, color: '#52525b', marginTop: 4 } as React.CSSProperties,
   // 外层容器：固定时间轴 + 可滚动图表
   chartOuter: { borderRadius: 18, border: '1px solid #1e1e32', background: '#08081a', marginBottom: 32, overflow: 'hidden' } as React.CSSProperties,
   // 固定时间轴列
