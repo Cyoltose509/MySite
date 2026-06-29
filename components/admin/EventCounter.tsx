@@ -84,7 +84,7 @@ export function EventCounter() {
   const logEvent = async (groupId: string) => {
     setLoading(true);
     try {
-      const eventAt = `${recordDate}T${recordTime}:00`;
+      const eventAt = new Date(`${recordDate}T${recordTime}:00`).toISOString();
       const { data, error } = await supabase.rpc('fn_log_event', {
         p_hash: getSession() || '',
         p_group_id: groupId,

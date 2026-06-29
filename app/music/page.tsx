@@ -3,6 +3,8 @@
 import { useEffect, useState, useMemo } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
+import AnalysisPanel from '@/components/music/AnalysisPanel';
+import type { MusicAnalysisItem } from '@/lib/music-analysis';
 import {
   C, pageStyle, cardGridStyle, cardStyle, cardBgStyle, cardOverlayStyle,
   cardContentStyle, cardTitleStyle, cardArtistStyle, cardAlbumStyle, cardDurationStyle,
@@ -61,6 +63,7 @@ export default function MusicPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [detailMusic, setDetailMusic] = useState<MusicRecord | null>(null);
+  const [showAnalysis, setShowAnalysis] = useState(false);
 
   useEffect(() => { fetchMusic(); }, []);
 
@@ -105,7 +108,6 @@ export default function MusicPage() {
     }
     return Object.entries(counts)
       .sort((a, b) => b[1] - a[1])
-      .slice(0, 30)
       .map(([tag, count]) => ({ tag, count }));
   }, [tagsMap]);
 
@@ -161,6 +163,28 @@ export default function MusicPage() {
     return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
+  // Build analysis items from tagged music
+  const analysisItems = useMemo<MusicAnalysisItem[]>(() => {
+    const items: MusicAnalysisItem[] = [];
+    for (const m of musicList) {
+      const tags = tagsMap[m.id];
+      if (!tags || tags.length === 0) continue;
+      const firstTag = tags[0];
+      if (!firstTag.likability) continue;
+      items.push({
+        id: m.id,
+        title: m.title,
+        artist: m.artist,
+        tags: tags.map(t => t.tag),
+        likability: firstTag.likability,
+        singability: firstTag.singability || 0,
+        voice: firstTag.voice,
+        playCount: m.play_count || 0,
+      });
+    }
+    return items;
+  }, [musicList, tagsMap]);
+
   if (loading) {
     return <div style={loadingContainerStyle}><div style={spinnerStyle} /><p style={loadingTextStyle}>加载中...</p></div>;
   }
@@ -191,6 +215,12 @@ export default function MusicPage() {
         <Link href="/" style={backLinkStyle}>← 首页</Link>
         <h1 style={h1Style}>🎵 音乐收藏</h1>
         <span style={countBadgeStyle}>{musicList.length} 首</span>
+        <button onClick={() => setShowAnalysis(true)} style={{
+          padding: '4px 14px', borderRadius: 20, border: '1px solid #27273d',
+          background: '#16162a', color: '#f59e0b', fontSize: 13, cursor: 'pointer',
+        }}>
+          📊 分析
+        </button>
       </header>
 
       <p style={sourceNoteStyle}>数据来源：网易云音乐</p>
@@ -410,6 +440,9 @@ export default function MusicPage() {
           </div>
         </div>
       )}
+
+      {/* Analysis Panel Overlay */}
+      {showAnalysis && <AnalysisPanel items={analysisItems} onClose={() => setShowAnalysis(false)} onTagFilter={(tag) => { setTagFilter(tag); setVoiceFilter(null); setLikabilityFilter(null); setSingabilityFilter(null); setSearch(''); }} />}
     </div>
   );
 }

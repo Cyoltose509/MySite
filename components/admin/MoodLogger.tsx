@@ -26,6 +26,7 @@ export function MoodLogger() {
   const [visibility, setVisibility] = useState<'public' | 'private'>('public');
   const [customDate, setCustomDate] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [fillingGaps, setFillingGaps] = useState(false);
 
   useEffect(() => { fetchLogs(); }, []);
 
@@ -96,7 +97,77 @@ export function MoodLogger() {
     setMessage(null);
   };
 
-  // 10级心情滑块标签
+  const handleFillGaps = async () => {
+    if (!confirm('将自动补全从首条记录到今天之间所有空缺日期（心情7分，"今天是平平无奇的一天"），确定？')) return;
+    setFillingGaps(true);
+    setMessage(null);
+    const hash = getSession() || '';
+
+    try {
+      // 1. 获取所有心情记录的日期
+      const { data: allLogs } = await supabase
+        .from('mood_logs')
+        .select('created_at')
+        .order('created_at', { ascending: true })
+        .limit(5000);
+
+      const existingDates = new Set<string>();
+      if (allLogs) {
+        for (const row of allLogs) {
+          existingDates.add(new Date(row.created_at).toISOString().slice(0, 10));
+        }
+      }
+
+      // 2. 找首条日期和今天之间的空缺
+      const sortedDates = [...existingDates].sort();
+      const firstDate = sortedDates[0];
+      const today = new Date().toISOString().slice(0, 10);
+
+      if (!firstDate) {
+        setMessage({ text: '❌ 没有已有记录，无法补全', type: 'err' });
+        setFillingGaps(false);
+        return;
+      }
+
+      const missing: string[] = [];
+      const cursor = new Date(firstDate + 'T00:00:00Z');
+      const end = new Date(today + 'T00:00:00Z');
+
+      while (cursor <= end) {
+        const dateStr = cursor.toISOString().slice(0, 10);
+        if (!existingDates.has(dateStr)) {
+          missing.push(dateStr);
+        }
+        cursor.setUTCDate(cursor.getUTCDate() + 1);
+      }
+
+      if (missing.length === 0) {
+        setMessage({ text: '✅ 没有空缺日期', type: 'ok' });
+        setFillingGaps(false);
+        return;
+      }
+
+      // 3. 逐条插入
+      let done = 0;
+      for (const dateStr of missing) {
+        await supabase.rpc('fn_save_mood_log', {
+          p_hash: hash,
+          p_mood: '平平无奇',
+          p_note: '今天是平平无奇的一天',
+          p_mood_score: 7,
+          p_visibility: 'public',
+          p_created_at: new Date(dateStr + 'T12:00:00Z').toISOString(),
+        });
+        done++;
+      }
+
+      setMessage({ text: `✅ 已补全 ${done} 天空缺`, type: 'ok' });
+      fetchLogs();
+    } catch (e: any) {
+      setMessage({ text: `❌ ${e.message}`, type: 'err' });
+    }
+    setFillingGaps(false);
+  };
   const scoreLabel = (n: number) => MOOD_SCORE_LABELS[n] || n;
 
   return (
@@ -162,7 +233,16 @@ export function MoodLogger() {
 
       {/* List Section */}
       <div style={styles.listSection}>
-        <p style={styles.sectionTitle}>历史记录 ({logs.length})</p>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+          <p style={{ ...styles.sectionTitle, margin: 0 }}>历史记录 ({logs.length})</p>
+          <button onClick={handleFillGaps} disabled={fillingGaps} style={{
+            padding: '5px 12px', borderRadius: 8, border: '1px solid #2a2a40',
+            background: '#121224', color: '#818cf8', fontSize: 12, cursor: fillingGaps ? 'not-allowed' : 'pointer',
+            opacity: fillingGaps ? 0.6 : 1,
+          }}>
+            {fillingGaps ? '补全中...' : '🔧 补全空缺'}
+          </button>
+        </div>
         {logs.length === 0 && <p style={styles.emptyText}>暂无记录</p>}
         <div style={styles.logList}>
           {logs.map((log) => (

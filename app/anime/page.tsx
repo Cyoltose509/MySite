@@ -14,7 +14,8 @@ import {
   badgeStyle,
 } from '@/lib/card-styles';
 
-import { getAnimeList, getAnimeCovers, getAnimeQuartzLink } from '@/lib/anime-data';
+import { getAnimeList, getAnimeCovers, getAnimeQuartzLink, clearAnimeCache } from '@/lib/anime-data';
+import AnalysisPanel from '@/components/anime/AnalysisPanel';
 
 const STATUS_ORDER: Record<string, number> = { '看完': 0, '正在看': 1, '中道崩殂': 2, '未知': 3 };
 const STATUS_LABELS: Record<string, string> = { '看完': '看完', '正在看': '在追', '中道崩殂': '弃了', '未知': '?' };
@@ -31,6 +32,8 @@ export default function AnimePage() {
   const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState('rating');
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [showAnalysis, setShowAnalysis] = useState(false);
   const [detailAnime, setDetailAnime] = useState<AnimeItemType | null>(null);
 
   useEffect(() => { fetchAnime(); }, []);
@@ -50,6 +53,13 @@ export default function AnimePage() {
     } catch {}
   };
 
+  const refreshAnime = async () => {
+    setRefreshing(true);
+    clearAnimeCache();
+    await fetchAnime();
+    setRefreshing(false);
+  };
+
   const allTags = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const a of animeList) {
@@ -57,7 +67,6 @@ export default function AnimePage() {
     }
     return Object.entries(counts)
       .sort((a, b) => b[1] - a[1])
-      .slice(0, 20)
       .map(([tag, count]) => ({ tag, count }));
   }, [animeList]);
 
@@ -114,6 +123,19 @@ export default function AnimePage() {
         <Link href="/" style={backLinkStyle}>← 首页</Link>
         <h1 style={h1Style}>📺 番剧列表</h1>
         <span style={countBadgeStyle}>{animeList.length} 部</span>
+        <button onClick={refreshAnime} disabled={refreshing} style={{
+          padding: '4px 14px', borderRadius: 20, border: '1px solid #27273d',
+          background: '#16162a', color: '#818cf8', fontSize: 13, cursor: refreshing ? 'not-allowed' : 'pointer',
+          opacity: refreshing ? 0.6 : 1,
+        }} title="清除缓存并重新拉取">
+          {refreshing ? '刷新中...' : '🔄 刷新'}
+        </button>
+        <button onClick={() => setShowAnalysis(true)} style={{
+          padding: '4px 14px', borderRadius: 20, border: '1px solid #27273d',
+          background: '#16162a', color: '#f59e0b', fontSize: 13, cursor: 'pointer',
+        }}>
+          📊 分析
+        </button>
       </header>
 
       {/* Stats bar */}
@@ -289,6 +311,9 @@ export default function AnimePage() {
           </div>
         </div>
       )}
+
+      {/* Analysis Panel Overlay */}
+      {showAnalysis && <AnalysisPanel items={animeList} onClose={() => setShowAnalysis(false)} onTagFilter={(tag) => { setTagFilter(tag); }} />}
     </div>
   );
 }

@@ -97,6 +97,22 @@ function parseAnimeMarkdown(text: string, filepath: string): AnimeItem | null {
 }
 
 /**
+ * 当 GitHub API 不可用时，回退到过期的 localStorage 缓存
+ */
+function fallbackCache(onProgress?: (current: number, total: number) => void): AnimeItem[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const cached = localStorage.getItem(CACHE_KEY);
+    if (cached) {
+      const parsed: CacheData = JSON.parse(cached);
+      onProgress?.(parsed.data.length, parsed.data.length);
+      return parsed.data;
+    }
+  } catch {}
+  return [];
+}
+
+/**
  * Fetch all anime from GitHub, with localStorage caching.
  * On cache hit, returns immediately. Otherwise fetches tree + raw files.
  */
@@ -118,9 +134,17 @@ export async function getAnimeList(
   }
 
   // 1. Fetch tree (single request)
-  const treeResp = await fetch(TREE_API);
+  let treeResp: Response;
+  try {
+    treeResp = await fetch(TREE_API);
+  } catch (e) {
+    // GitHub API 无法访问（可能被墙），回退到过期缓存
+    console.warn('GitHub API 不可用，使用本地缓存:', e);
+    return fallbackCache(onProgress);
+  }
   if (!treeResp.ok) {
-    throw new Error(`GitHub API 错误: ${treeResp.status}`);
+    console.warn(`GitHub API 返回 ${treeResp.status}，使用本地缓存`);
+    return fallbackCache(onProgress);
   }
   const tree = await treeResp.json();
 

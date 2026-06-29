@@ -90,23 +90,24 @@ export default function EventsPage() {
 
     // 按正确步长迭代生成桶（解决月/年步长不固定问题）
     const result: { key: string; data: Record<string, number>; total: number }[] = [];
-    const d = new Date(alignDown(tMin));
-    const endTs = tMax + 86400000; // 多一个桶
+    const d = new Date(alignDown(tMax + 86400000));
+    const endTs = tMin; // 多一个桶
 
-    for (let i = 0; i < 100 && d.getTime() <= endTs; i++) {
+    for (let i = 0; i < 100 && d.getTime() >= tMin; i++) {
       const key = String(d.getTime());
       const data = dataMap[key] || {};
       const total = Object.values(data).reduce((a, b) => a + b, 0);
       result.push({ key, data, total });
 
       switch (scale) {
-        case 'hourly': d.setHours(d.getHours() + 1); break;
-        case 'daily': d.setDate(d.getDate() + 1); break;
-        case 'weekly': d.setDate(d.getDate() + 7); break;
-        case 'monthly': d.setMonth(d.getMonth() + 1); break;
-        case 'yearly': d.setFullYear(d.getFullYear() + 1); break;
+        case 'hourly': d.setHours(d.getHours() - 1); break;
+        case 'daily': d.setDate(d.getDate() - 1); break;
+        case 'weekly': d.setDate(d.getDate() -7); break;
+        case 'monthly': d.setMonth(d.getMonth() - 1); break;
+        case 'yearly': d.setFullYear(d.getFullYear() - 1); break;
       }
     }
+    result.reverse();
 
     return result;
   }, [rawEvents, visibleGroups, scale, groups]);
