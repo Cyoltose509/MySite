@@ -1,42 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import https from 'https';
-import { execSync } from 'child_process';
-
-function steamTags(appid: number): Promise<{ genres: string[]; userTags: string[] }> {
-  return new Promise((resolve) => {
-    const req = https.get(`https://store.steampowered.com/api/appdetails?appids=${appid}&l=schinese`, {
-      headers: { 'User-Agent': 'Mozilla/5.0' }
-    }, (res) => {
-      let data = '';
-      res.on('data', (chunk: string) => data += chunk);
-      res.on('end', () => {
-        try {
-          const j = JSON.parse(data);
-          const d = j[String(appid)];
-          const genres = (d?.data?.genres || []).map((g: any) => g.description);
-
-          // Try store page via curl (works when Node https doesn't)
-          let userTags: string[] = [];
-          try {
-            const html = execSync(
-              `curl -sL --max-time 8 "https://store.steampowered.com/app/${appid}/?l=schinese"`,
-              { encoding: 'utf-8', timeout: 10000, windowsHide: true }
-            );
-            const m = html.match(/InitAppTagModal\s*\(\s*\d+\s*,\s*(\[[\s\S]*?\])\s*\)/);
-            if (m) {
-              const tags = JSON.parse(m[1]);
-              userTags = tags.filter((t: any) => t.name).slice(0, 5).map((t: any) => t.name.trim());
-            }
-          } catch { /* curl/store page unavailable */ }
-
-          resolve({ genres, userTags });
-        } catch { resolve({ genres: [], userTags: [] }); }
-      });
-    });
-    req.on('error', () => resolve({ genres: [], userTags: [] }));
-    req.setTimeout(6000, () => { req.destroy(); resolve({ genres: [], userTags: [] }); });
-  });
-}
 
 export async function GET() {
   const API_KEY = process.env.STEAM_API_KEY;
@@ -75,31 +37,6 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  try {
-    const { appid, name } = await req.json();
-    if (!appid) return NextResponse.json({ ok: false, error: 'missing appid' }, { status: 400 });
-
-    const { genres, userTags } = await steamTags(appid);
-    const allTags = [...new Set([...genres, ...userTags])];
-    if (allTags.length === 0) return NextResponse.json({ ok: true, name, tags: 0 });
-
-    const { createClient } = await import('@supabase/supabase-js');
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!
-    );
-
-    const { data: rows } = await supabase.from('steam_games').select('id').eq('steam_app_id', appid).single();
-    if (!rows) return NextResponse.json({ ok: true, name, tags: 0 });
-
-    let count = 0;
-    for (const tag of allTags) {
-      await supabase.rpc('fn_insert_steam_tag', { p_game_id: rows.id, p_tag: tag });
-      count++;
-    }
-
-    return NextResponse.json({ ok: true, name, tags: count });
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e.message }, { status: 500 });
-  }
+  // Steam 标签同步已禁用
+  return NextResponse.json({ ok: true, tags: 0 });
 }

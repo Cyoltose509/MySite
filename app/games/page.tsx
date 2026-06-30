@@ -5,6 +5,8 @@
 import {useEffect, useState, useMemo} from 'react';
 import Link from 'next/link';
 import {supabase} from '@/lib/supabase';
+import AnalysisPanel from '@/components/games/AnalysisPanel';
+import type { GameAnalysisItem } from '@/lib/game-analysis';
 import {PageLoading} from '@/components/shared';
 import {
     C,
@@ -49,6 +51,7 @@ interface GameRecord {
     is_manual?: boolean;
     store_url?: string;
     custom_cover?: string;
+    metrics?: Record<string, string>;
 }
 
 interface GameTagData {
@@ -73,9 +76,10 @@ export default function GamesPage() {
     const [search, setSearch] = useState('');
     const [ratingFilter, setRatingFilter] = useState<string | null>(null);
     const [tagFilter, setTagFilter] = useState<string | null>(null);
-    const [sortBy, setSortBy] = useState('playtime');
+    const [sortBy, setSortBy] = useState('rating');
     const [loading, setLoading] = useState(true);
     const [detailGame, setDetailGame] = useState<GameRecord | null>(null);
+    const [showAnalysis, setShowAnalysis] = useState(false);
 
     useEffect(() => {
         fetchGames();
@@ -106,13 +110,13 @@ export default function GamesPage() {
     }, [tagsMap]);
 
     const sorted = [...games].sort((a, b) => {
-        if (sortBy === 'playtime') return b.playtime_forever - a.playtime_forever;
-        if (sortBy === 'playtime_2weeks') return b.playtime_2weeks - a.playtime_2weeks;
-        if (sortBy === 'title') return a.title.localeCompare(b.title);
         const ra = tagsMap[a.id]?.[0];
         const rb = tagsMap[b.id]?.[0];
-        if (sortBy === 'rating') return (RATING_ORDER[ra?.rating || ''] ?? 99) - (RATING_ORDER[rb?.rating || ''] ?? 99);
-        return 0;
+        if (sortBy === 'rating') {
+            const diff = (RATING_ORDER[ra?.rating || ''] ?? 99) - (RATING_ORDER[rb?.rating || ''] ?? 99);
+            if (diff !== 0) return diff;
+        }
+        return a.title.localeCompare(b.title);
     });
 
     const filtered = sorted.filter(g => {
@@ -139,6 +143,18 @@ export default function GamesPage() {
         return m > 0 ? `${h}.${Math.round(m / 6)}h` : `${h}h`;
     };
 
+    const metricLabel = (k: string) => {
+        const m: Record<string, string> = {
+            playtime: '🕐', achievements: '🏆', characters: '👤', clears: '🔄',
+        };
+        return m[k] || k;
+    };
+    const metricChip = (k?: string) => ({
+        fontSize: 11, color: '#a1a1aa', padding: '2px 8px', borderRadius: 6,
+        background: '#16162a', border: '1px solid #27273d', whiteSpace: 'nowrap' as const,
+        display: 'flex', alignItems: 'center', gap: 3,
+    });
+
     const ratings = ['夯', '顶级', '人上人', 'NPC', '拉完了'];
     const taggedCount = Object.keys(tagsMap).length;
 
@@ -159,9 +175,13 @@ export default function GamesPage() {
                 <Link href="/" style={backLinkStyle}>← 首页</Link>
                 <h1 style={h1Style}>🎮 游戏库</h1>
                 <span style={countBadgeStyle}>{games.length} 款</span>
+                <button onClick={() => setShowAnalysis(true)} style={{
+                    padding: '4px 14px', borderRadius: 20, border: '1px solid #27273d',
+                    background: '#16162a', color: '#f59e0b', fontSize: 13, cursor: 'pointer',
+                }}>📊 分析</button>
             </header>
 
-            <p style={{fontSize: 11, color: '#52525b', marginBottom: 12}}>数据来源：Steam</p>
+            <p style={{fontSize: 11, color: '#52525b', marginBottom: 12}}>数据来源：Steam + 自定义</p>
 
             <section style={controlsStyle}>
                 <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍 搜索游戏或标签..." style={searchInputStyle}/>
@@ -170,8 +190,6 @@ export default function GamesPage() {
                     <span style={filterLabelStyle}>排序</span>
                     <div style={filterTabsStyle}>
                         {[
-                            {value: 'playtime', label: '时长优先'},
-                            {value: 'playtime_2weeks', label: '近期优先'},
                             {value: 'rating', label: '评级优先'},
                             {value: 'title', label: '标题 A→Z'},
                         ].map(o => (
@@ -235,9 +253,18 @@ export default function GamesPage() {
                                         fontWeight: 700
                                     }}>{firstTag.rating}</span>}
                                 </div>
-                                <p style={cardDurationStyle}>🕐 {fmtPlaytime(g.playtime_forever)}</p>
+                                {g.playtime_forever > 0 && <p style={cardDurationStyle}>🕐 {fmtPlaytime(g.playtime_forever)}</p>}
                                 {g.playtime_2weeks > 0 &&
                                     <p style={{fontSize: 10, color: '#52525b'}}>近两周 {fmtPlaytime(g.playtime_2weeks)}</p>}
+                                {g.metrics && Object.keys(g.metrics).length > 0 && (
+                                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 3 }}>
+                                        {Object.entries(g.metrics).slice(0, 3).map(([k, v]) => (
+                                            <span key={k} style={{ fontSize: 9, color: '#52525b' }}>
+                                                {metricLabel(k)} {v}
+                                            </span>
+                                        ))}
+                                    </div>
+                                )}
                                 {tags.length > 0 && (
                                     <div style={{display: 'flex', gap: 3, flexWrap: 'wrap', marginTop: 4}}>
                                         {tags.slice(0, 5).map(t => <span key={t.id} style={tagChipStyle}>{t.tag}</span>)}
@@ -264,20 +291,20 @@ export default function GamesPage() {
                             )}
                             <div>
                                 <h2 style={{fontSize: 22, fontWeight: 800, color: '#fff', margin: '0 0 8px'}}>{detailGame.title}</h2>
-                                <div style={{display: 'flex', gap: 8, marginBottom: 8}}>
+                                <div style={{display: 'flex', gap: 8, marginBottom: 6}}>
                                     {detailTags[0]?.rating && <span style={{
                                         ...badgeStyle(RATING_COLORS[detailTags[0].rating]),
                                         fontSize: 13,
                                         fontWeight: 700
                                     }}>{detailTags[0].rating}</span>}
+                                    {detailGame.playtime_forever > 0 && <span style={metricChip()}>🕐 {fmtPlaytime(detailGame.playtime_forever)}</span>}
+                                    {detailGame.playtime_2weeks > 0 && <span style={metricChip()}>近两周 {fmtPlaytime(detailGame.playtime_2weeks)}</span>}
+                                    {detailGame.metrics && Object.entries(detailGame.metrics)
+                                      .filter(([k]) => k !== 'playtime')
+                                      .map(([k, v]) => (
+                                        <span key={k} style={metricChip()}>{metricLabel(k)} {v}</span>
+                                    ))}
                                 </div>
-                                <p style={{
-                                    fontSize: 14,
-                                    color: C.textSec,
-                                    margin: '4px 0'
-                                }}>总时长：{fmtPlaytime(detailGame.playtime_forever)}</p>
-                                {detailGame.playtime_2weeks > 0 &&
-                                    <p style={{fontSize: 13, color: '#52525b'}}>近两周：{fmtPlaytime(detailGame.playtime_2weeks)}</p>}
                                 {(detailGame.store_url || (!detailGame.is_manual && detailGame.steam_app_id > 0)) && (
                                     <a href={detailGame.store_url || `https://store.steampowered.com/app/${detailGame.steam_app_id}`}
                                        target="_blank"
@@ -309,6 +336,21 @@ export default function GamesPage() {
                     </div>
                 </div>
 
+            )}
+
+            {showAnalysis && (
+              <AnalysisPanel
+                items={games.map(g => ({
+                  id: g.id,
+                  title: g.title,
+                  playtime_forever: g.playtime_forever,
+                  playtime_2weeks: g.playtime_2weeks,
+                  rating: (tagsMap[g.id] || [])[0]?.rating,
+                  tags: (tagsMap[g.id] || []).map(t => t.tag),
+                  note: (tagsMap[g.id] || [])[0]?.note,
+                }))}
+                onClose={() => setShowAnalysis(false)}
+              />
             )}
         </div>
     );

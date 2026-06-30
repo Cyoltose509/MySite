@@ -15,13 +15,21 @@ interface GameRecord {
   id: string; steam_app_id: number; title: string;
   playtime_forever: number; is_manual: boolean;
   store_url?: string; custom_cover?: string;
+  metrics?: Record<string, string>;
 }
 
 interface GameTag { id?: string; game_id: string; tag: string; rating?: string; note?: string; }
 
 const RATINGS = ['夯', '顶级', '人上人', 'NPC', '拉完了'];
+const RATING_ORDER: Record<string, number> = { '夯': 0, '顶级': 1, '人上人': 2, 'NPC': 3, '拉完了': 4 };
 const RC: Record<string, string> = { '夯': '#a855f7', '顶级': '#4ade80', '人上人': '#eab308', 'NPC': '#6b7280', '拉完了': '#f87171' };
 const PRESET_GAME_TAGS = ['RPG', 'FPS', '动作', '冒险', '策略', '模拟', '独立', '休闲', '恐怖', '肉鸽', '开放世界', '多人', '像素', '剧情'];
+const METRIC_PRESETS = [
+  { key: 'playtime', label: '🕐 游玩时长', desc: '分钟' },
+  { key: 'achievements', label: '🏆 成就', desc: '已获得/总数' },
+  { key: 'characters', label: '👤 角色', desc: '已获得角色数' },
+  { key: 'clears', label: '🔄 通关', desc: '通关次数' },
+] as const;
 
 export function SteamGameEditor() {
   const [games, setGames] = useState<GameRecord[]>([]);
@@ -34,11 +42,16 @@ export function SteamGameEditor() {
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [rating, setRating] = useState('');
   const [note, setNote] = useState('');
+  const [metrics, setMetrics] = useState<Record<string, string>>({});
+  const [newMetricKey, setNewMetricKey] = useState('');
+  const [newMetricVal, setNewMetricVal] = useState('');
+  const [newMetricCustomKey, setNewMetricCustomKey] = useState('');
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
   const [addTitle, setAddTitle] = useState('');
   const [addUrl, setAddUrl] = useState('');
   const [addCover, setAddCover] = useState('');
+  const [addPlaytime, setAddPlaytime] = useState('');
 
   useEffect(() => { fetchData(); }, []);
 
@@ -61,8 +74,16 @@ export function SteamGameEditor() {
 
   const sorted = useMemo(() => {
     const q = search.toLowerCase();
-    return search.trim() ? games.filter(g => g.title.toLowerCase().includes(q)) : games;
-  }, [games, search]);
+    let list = search.trim() ? games.filter(g => g.title.toLowerCase().includes(q)) : games;
+    return list.sort((a, b) => {
+      const ta = tagsMap[a.id]?.[0];
+      const tb = tagsMap[b.id]?.[0];
+      const oa = RATING_ORDER[ta?.rating || ''] ?? 99;
+      const ob = RATING_ORDER[tb?.rating || ''] ?? 99;
+      if (oa !== ob) return oa - ob;
+      return a.title.localeCompare(b.title);
+    });
+  }, [games, search, tagsMap]);
 
   const handleSelect = (g: GameRecord) => {
     setSelectedId(g.id); setSelectedGame(g);
@@ -70,16 +91,25 @@ export function SteamGameEditor() {
     setSelectedTags(tags.map(t => t.tag));
     setRating(tags[0]?.rating || '');
     setNote(tags[0]?.note || '');
+    const m = { ...(g.metrics || {}) };
+    if (g.playtime_forever > 0 && !m.playtime) {
+      m.playtime = String(g.playtime_forever);
+    }
+    setMetrics(m);
   };
 
   const handleSave = async () => {
     if (!selectedId || selectedTags.length === 0) return;
     const hash = getSession(); if (!hash) return;
     setSaving(true);
+    const pt = metrics.playtime ? (parseInt(metrics.playtime) || 0) : 0;
     const { error } = await supabase.rpc('fn_save_steam_tag', {
       p_hash: hash, p_game_id: selectedId, p_tags: selectedTags,
       p_rating: rating || null, p_note: note || null,
     });
+    if (!error) {
+      await supabase.from('steam_games').update({ playtime_forever: pt, metrics }).eq('id', selectedId);
+    }
     setSaving(false);
     if (error) { setMsg('❌ 保存失败'); } else { setMsg('✅ 已保存'); fetchData(); }
     setTimeout(() => setMsg(''), 2000);
@@ -112,11 +142,12 @@ export function SteamGameEditor() {
   };
   const handleAdd = async () => {
     if (!addTitle.trim()) return;
+    const pt = parseInt(addPlaytime) || 0;
     const { error } = await supabase.from('steam_games').insert({
-      steam_app_id: 0, title: addTitle.trim(), playtime_forever: 0, is_manual: true,
+      steam_app_id: 0, title: addTitle.trim(), playtime_forever: pt, is_manual: true,
       store_url: addUrl.trim() || null, custom_cover: addCover.trim() || null,
     });
-    if (error) { setMsg('❌ ' + error.message); } else { setMsg('✅ 已添加'); setAddTitle(''); setAddUrl(''); setAddCover(''); fetchData(); }
+    if (error) { setMsg('❌ ' + error.message); } else { setMsg('✅ 已添加'); setAddTitle(''); setAddUrl(''); setAddCover(''); setAddPlaytime(''); fetchData(); }
     setTimeout(() => setMsg(''), 2000);
   };
 
@@ -151,7 +182,6 @@ export function SteamGameEditor() {
                   <div style={cardContentStyle}>
                     <div style={{ ...cardTitleStyle(hasTags), marginBottom: 2 }}>{g.title}</div>
                     <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 4 }}>
-                      <span style={{ fontSize: 10, color: '#52525b' }}>{fmtPlaytime(g.playtime_forever)}</span>
                       {g.is_manual && <span style={{ fontSize: 10, color: C.accent }}>手动</span>}
                     </div>
                     <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 4 }}>
@@ -193,6 +223,8 @@ export function SteamGameEditor() {
         <div style={{ maxWidth: 500 }}>
           <div style={{ marginBottom: 12 }}><label style={lbl}>游戏名 *</label>
             <input value={addTitle} onChange={e => setAddTitle(e.target.value)} placeholder="例如：Hollow Knight" style={iS} /></div>
+          <div style={{ marginBottom: 12 }}><label style={lbl}>游玩时长 (分钟)</label>
+            <input value={addPlaytime} onChange={e => setAddPlaytime(e.target.value)} placeholder="0" type="number" style={iS} /></div>
           <div style={{ marginBottom: 12 }}><label style={lbl}>商店链接 (可选)</label>
             <input value={addUrl} onChange={e => setAddUrl(e.target.value)} placeholder="https://..." style={iS} /></div>
           <div style={{ marginBottom: 16 }}><label style={lbl}>封面图链接 (可选)</label>
@@ -212,16 +244,16 @@ export function SteamGameEditor() {
             <h4 style={{ margin: 0, fontSize: 14, color: C.text, fontWeight: 600 }}>✏️ {selectedGame.title}</h4>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <button onClick={() => handleBlacklist(selectedGame)}
-                style={actBtn('#3b1818', '#f87171')}>🚫 黑名单</button>
+                style={actBtn('#3b1818', '#f87171')}>黑名单</button>
               <button onClick={() => { const g = selectedGame; setSelectedGame(null); setSelectedId(null); handleDelete(g); }}
-                style={actBtn('#3b1010', '#f87171')}>🗑 删除</button>
+                style={actBtn('#3b1010', '#f87171')}>删除</button>
               <button onClick={() => { setSelectedId(null); setSelectedGame(null); }}
                 style={{ background: 'none', border: 'none', color: '#71717a', cursor: 'pointer', fontSize: 18 }}>✕</button>
             </div>
           </div>
 
           <div style={{ marginBottom: 14 }}>
-            <p style={{ fontSize: 11, color: '#52525b', marginBottom: 6 }}>评级</p>
+            <p style={{ fontSize: 11, color: C.text, marginBottom: 6 }}>评级</p>
             <div style={{ display: 'flex', gap: 6 }}>
               {RATINGS.map(r => (
                 <button key={r} onClick={() => setRating(r)} style={{
@@ -230,6 +262,79 @@ export function SteamGameEditor() {
                   fontSize: 12, cursor: 'pointer', fontWeight: 600,
                 }}>{r}</button>
               ))}
+            </div>
+          </div>
+
+          {/* Metrics */}
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <p style={{ fontSize: 11,color: C.text, margin: 0 }}>数据指标</p>
+              {!selectedGame.is_manual && selectedGame.steam_app_id > 0 && (
+                <button onClick={async () => {
+                  setSaving(true);
+                  try {
+                    const res = await fetch('/api/import-steam-achievements', {
+                      method: 'POST', headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ appid: selectedGame.steam_app_id, gameId: selectedId }),
+                    });
+                    const d = await res.json();
+                    if (d.ok) { setMetrics(prev => ({ ...prev, achievements: d.achievements })); setMsg('✅ ' + d.note || '✅ 已导入'); }
+                    else setMsg('❌ ' + (d.error || '导入失败'));
+                  } catch { setMsg('❌ 网络错误'); }
+                  setSaving(false);
+                  setTimeout(() => setMsg(''), 2500);
+                }} disabled={saving} style={{
+                  padding: '4px 12px', borderRadius: 8, border: '1px solid #1e3a5f', background: '#0a1628',
+                  color: '#60a5fa', fontSize: 11, cursor: saving ? 'wait' : 'pointer', opacity: saving ? 0.5 : 1,
+                }}>🔄 导入 Steam 成就</button>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {Object.entries(metrics).map(([k, v]) => {
+                const preset = METRIC_PRESETS.find(p => p.key === k);
+                return (
+                  <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 12, color: C.textDim, minWidth: 80 }}>{preset?.label || k}</span>
+                    <input value={v} onChange={e => setMetrics(prev => ({ ...prev, [k]: e.target.value }))}
+                      style={{ ...iS, flex: 1, padding: '6px 10px' }} />
+                    <button onClick={() => setMetrics(prev => { const n = { ...prev }; delete n[k]; return n; })}
+                      style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #3b1818', background: 'transparent',
+                        color: '#f87171', fontSize: 11, cursor: 'pointer', lineHeight: 1 }}>✕</button>
+                  </div>
+                );
+              })}
+
+              {/* Add new */}
+              <div style={{ display: 'flex', gap: 6, paddingTop: 2 }}>
+                <select value={newMetricKey} onChange={e => setNewMetricKey(e.target.value)}
+                  style={{ ...iS, width: 100, padding: '5px 8px', cursor: 'pointer', flexShrink: 0 }}>
+                  <option value="">+ 添加</option>
+                  {METRIC_PRESETS.filter(p => !metrics[p.key]).map(p => (
+                    <option key={p.key} value={p.key}>{p.label}</option>
+                  ))}
+                  <option value="__custom__">自定义</option>
+                </select>
+                {newMetricKey === '__custom__' && (
+                  <input placeholder="键名" value={newMetricCustomKey} onChange={e => setNewMetricCustomKey(e.target.value)}
+                    style={{ ...iS, width: 70, padding: '5px 8px', flexShrink: 0 }} />
+                )}
+                {newMetricKey && (
+                  <input placeholder="数值" value={newMetricVal} onChange={e => setNewMetricVal(e.target.value)}
+                    style={{ ...iS, flex: 1, padding: '5px 8px' }} />
+                )}
+                {newMetricKey && (
+                  <button onClick={() => {
+                    if (!newMetricVal) return;
+                    const key = newMetricKey === '__custom__' ? newMetricCustomKey : newMetricKey;
+                    if (!key) return;
+                    setMetrics(prev => ({ ...prev, [key]: newMetricVal }));
+                    setNewMetricKey(''); setNewMetricVal(''); setNewMetricCustomKey('');
+                  }} style={{
+                    padding: '5px 12px', borderRadius: 6, border: 'none', background: C.accent, color: '#fff', fontSize: 13, cursor: 'pointer',
+                  }}>✓</button>
+                )}
+              </div>
             </div>
           </div>
 
