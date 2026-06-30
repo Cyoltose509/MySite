@@ -418,6 +418,7 @@ export function computeAnomaliesSingability(parsed: ParsedMusic[], allTags: stri
     const expected = sumAvgs / countAvgs;
     const diff = p.singability - expected;
     anomalies.push({
+      id: p.id,
       title: p.title, artist: p.artist,
       score: p.singability,
       ratingLabel: LIKABILITY_LABELS[p.singability] || '',
