@@ -490,7 +490,6 @@ export default function MusicPage() {
           </div>
         </div>
       )}
-      </div>
 
       {/* Analysis Panel Overlay */}
       {showAnalysis && <AnalysisPanel items={analysisItems} onClose={() => setShowAnalysis(false)}
