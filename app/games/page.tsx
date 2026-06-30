@@ -22,6 +22,9 @@ interface GameRecord {
   playtime_2weeks: number;
   img_icon_url: string;
   img_logo_url: string;
+  is_manual?: boolean;
+  store_url?: string;
+  custom_cover?: string;
 }
 
 interface GameTagData {
@@ -108,7 +111,8 @@ export default function GamesPage() {
   const taggedCount = Object.keys(tagsMap).length;
 
   const steamImg = (g: GameRecord) => {
-    // Primary: Steam capsule header image (most games have this)
+    if (g.custom_cover) return g.custom_cover;
+    if (g.is_manual) return ''; // non-Steam manual games have no Steam CDN cover
     return `https://cdn.cloudflare.steamstatic.com/steam/apps/${g.steam_app_id}/header.jpg`;
   };
 
@@ -226,8 +230,10 @@ export default function GamesPage() {
                 </div>
                 <p style={{ fontSize: 14, color: C.textSec, margin: '4px 0' }}>总时长：{fmtPlaytime(detailGame.playtime_forever)}</p>
                 {detailGame.playtime_2weeks > 0 && <p style={{ fontSize: 13, color: '#52525b' }}>近两周：{fmtPlaytime(detailGame.playtime_2weeks)}</p>}
-                <a href={`https://store.steampowered.com/app/${detailGame.steam_app_id}`} target="_blank"
-                  style={{ fontSize: 12, color: C.accentLt, textDecoration: 'none' }}>🔗 Steam 商店页面</a>
+                {(detailGame.store_url || (!detailGame.is_manual && detailGame.steam_app_id > 0)) && (
+                  <a href={detailGame.store_url || `https://store.steampowered.com/app/${detailGame.steam_app_id}`} target="_blank"
+                    style={{ fontSize: 12, color: C.accentLt, textDecoration: 'none' }}>🔗 {detailGame.store_url ? '商店页面' : 'Steam 商店页面'}</a>
+                )}
               </div>
             </div>
             {detailTags.length > 0 && (

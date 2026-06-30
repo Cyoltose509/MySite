@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import https from 'https';
+import { execSync } from 'child_process';
 
-function steamStoreAPI(appid: number): Promise<{ genres: string[]; categories: string[] } | null> {
+function steamTags(appid: number): Promise<{ genres: string[]; userTags: string[] }> {
   return new Promise((resolve) => {
-    https.get(`https://store.steampowered.com/api/appdetails?appids=${appid}&l=schinese`, {
+    const req = https.get(`https://store.steampowered.com/api/appdetails?appids=${appid}&l=schinese`, {
       headers: { 'User-Agent': 'Mozilla/5.0' }
     }, (res) => {
       let data = '';
@@ -12,13 +13,28 @@ function steamStoreAPI(appid: number): Promise<{ genres: string[]; categories: s
         try {
           const j = JSON.parse(data);
           const d = j[String(appid)];
-          if (!d?.success || !d?.data) return resolve(null);
-          const genres = (d.data.genres || []).map((g: any) => g.description);
-          const categories = (d.data.categories || []).map((c: any) => c.description);
-          resolve({ genres, categories });
-        } catch { resolve(null); }
+          const genres = (d?.data?.genres || []).map((g: any) => g.description);
+
+          // Try store page via curl (works when Node https doesn't)
+          let userTags: string[] = [];
+          try {
+            const html = execSync(
+              `curl -sL --max-time 8 "https://store.steampowered.com/app/${appid}/?l=schinese"`,
+              { encoding: 'utf-8', timeout: 10000, windowsHide: true }
+            );
+            const m = html.match(/InitAppTagModal\s*\(\s*\d+\s*,\s*(\[[\s\S]*?\])\s*\)/);
+            if (m) {
+              const tags = JSON.parse(m[1]);
+              userTags = tags.filter((t: any) => t.name).slice(0, 5).map((t: any) => t.name.trim());
+            }
+          } catch { /* curl/store page unavailable */ }
+
+          resolve({ genres, userTags });
+        } catch { resolve({ genres: [], userTags: [] }); }
       });
-    }).on('error', () => resolve(null));
+    });
+    req.on('error', () => resolve({ genres: [], userTags: [] }));
+    req.setTimeout(6000, () => { req.destroy(); resolve({ genres: [], userTags: [] }); });
   });
 }
 
@@ -40,8 +56,11 @@ export async function GET() {
 
     const games = json.response.games;
     let count = 0;
+    const { data: bl } = await supabase.from('steam_blacklist').select('steam_app_id');
+    const blacklisted = new Set((bl || []).map((b: any) => b.steam_app_id));
     const gameList: { appid: number; name: string }[] = [];
     for (const g of games) {
+      if (blacklisted.has(g.appid)) continue;
       const { error } = await supabase.rpc('fn_sync_steam_game', {
         p_steam_app_id: g.appid, p_title: g.name,
         p_playtime_forever: g.playtime_forever || 0, p_playtime_2weeks: g.playtime_2weeks || 0,
@@ -60,10 +79,8 @@ export async function POST(req: NextRequest) {
     const { appid, name } = await req.json();
     if (!appid) return NextResponse.json({ ok: false, error: 'missing appid' }, { status: 400 });
 
-    const detail = await steamStoreAPI(appid);
-    if (!detail) return NextResponse.json({ ok: true, name, tags: 0 });
-
-    const allTags = [...new Set([...detail.genres, ...detail.categories])];
+    const { genres, userTags } = await steamTags(appid);
+    const allTags = [...new Set([...genres, ...userTags])];
     if (allTags.length === 0) return NextResponse.json({ ok: true, name, tags: 0 });
 
     const { createClient } = await import('@supabase/supabase-js');

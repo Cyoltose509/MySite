@@ -8,6 +8,7 @@ import { readFileSync, existsSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import pg from 'pg';
+import https from 'https';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(__dirname, '..');
@@ -37,6 +38,16 @@ function log(icon, msg) {
   console.log(`\x1b[90m[${t}]\x1b[0m ${icon} ${msg}`);
 }
 
+function httpGet(url, timeout = 8000) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, res => {
+      let d = ''; res.on('data', c => d += c); res.on('end', () => resolve(d));
+    });
+    req.on('error', reject);
+    req.setTimeout(timeout, () => { req.destroy(); reject(new Error('timeout')); });
+  });
+}
+
 async function main() {
   console.log('\n\x1b[36m=== Steam 游戏库同步 ===\x1b[0m\n');
 
@@ -63,9 +74,11 @@ async function main() {
   await client.connect();
   log('\x1b[32m✓\x1b[0m', '数据库已连接');
 
-  // 3. UPSERT games
-  let count = 0;
+  // 3. UPSERT games (skip blacklisted, skip manual)
+  let count = 0, skipped = 0;
   for (const g of games) {
+    const { rows: bl } = await client.query('SELECT 1 FROM public.steam_blacklist WHERE steam_app_id = $1', [g.appid]);
+    if (bl.length > 0) { skipped++; continue; }
     await client.query(
       `INSERT INTO public.steam_games (steam_app_id, title, playtime_forever, playtime_2weeks, img_icon_url, img_logo_url, synced_at)
        VALUES ($1, $2, $3, $4, $5, $6, now())
@@ -98,8 +111,9 @@ async function main() {
     }
 
     try {
-      const detailResp = await fetch(`https://store.steampowered.com/api/appdetails?appids=${g.appid}&l=schinese`);
-      const detailJson = await detailResp.json();
+      // Get genres from API
+      const apiText = await httpGet(`https://store.steampowered.com/api/appdetails?appids=${g.appid}&l=schinese`);
+      const detailJson = JSON.parse(apiText);
       const detail = detailJson[String(g.appid)];
       if (detail && detail.success && detail.data) {
         const d = detail.data;
@@ -110,10 +124,17 @@ async function main() {
           tags.add(genre.description);
         }
 
-        // Categories (single-player, multi-player, etc.)
-        for (const cat of (d.categories || [])) {
-          tags.add(cat.description);
-        }
+        // User tags from store page (may fail if network blocked)
+        try {
+          const html = await httpGet(`https://store.steampowered.com/app/${g.appid}/?l=schinese`);
+          const m = html.match(/InitAppTagModal\s*\(\s*\d+\s*,\s*(\[[\s\S]*?\])\s*\)/);
+          if (m) {
+            const userTags = JSON.parse(m[1]);
+            for (const t of userTags.slice(0, 5)) {
+              if (t.name) tags.add(t.name.trim());
+            }
+          }
+        } catch { /* store page unreachable, skip */ }
 
         if (tags.size > 0) {
           const gameId = await client.query(
