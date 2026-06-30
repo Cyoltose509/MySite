@@ -105,7 +105,7 @@ async function main() {
         tracks.push({
           netease_id: String(s.id),
           title: s.name || '',
-          artist: s.artists?.[0]?.name || 'Unknown',
+          artist: (s.artists || []).map(a => a.name),
           album: s.album?.name || '',
           duration: (s.duration || 0) > 1000 ? Math.floor(s.duration / 1000) : (s.duration || 0),
           tags: [...new Set(tags)],
@@ -141,25 +141,27 @@ async function main() {
 
   log('\x1b[32m✓\x1b[0m', '数据库已连接');
 
-  // Clear existing and insert
-  await client.query('DELETE FROM public.music_list');
-
-  let inserted = 0;
+  // Upsert (INSERT ON CONFLICT) — won't delete existing data
+  let inserted = 0, updated = 0;
   for (let i = 0; i < tracks.length; i += 50) {
     const chunk = tracks.slice(i, i + 50);
     const values = [];
     const params = [];
     chunk.forEach((t, idx) => {
       const base = idx * 5;
-      // pg driver sends JS strings as text params, so use ::bigint cast
-      // to let PostgreSQL convert the text value to bigint
-      values.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}::bigint, $${base + 5})`);
+      values.push(`($${base + 1}, $${base + 2}::text[], $${base + 3}, $${base + 4}::bigint, $${base + 5})`);
       params.push(t.title, t.artist, t.album, String(t.netease_id), t.duration);
     });
 
     await client.query(
       `INSERT INTO public.music_list (title, artist, album, netease_id, duration)
-       VALUES ${values.join(', ')}`,
+       VALUES ${values.join(', ')}
+       ON CONFLICT (netease_id) DO UPDATE SET
+         title = EXCLUDED.title,
+         artist = EXCLUDED.artist,
+         album = EXCLUDED.album,
+         duration = EXCLUDED.duration
+       RETURNING (xmax = 0) AS is_insert`,
       params
     );
     inserted += chunk.length;

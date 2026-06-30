@@ -221,6 +221,7 @@ export function computeInfluence(parsed: ParsedMusic[], allTags: string[], tagId
 
 // ── 评分反常歌曲 ──
 export interface AnomalyResult {
+  id: string;
   title: string;
   artist: string;
   score: number;
@@ -252,6 +253,7 @@ export function computeAnomalies(parsed: ParsedMusic[], allTags: string[], tagId
     const expected = sumAvgs / countAvgs;
     const diff = p.likability - expected;
     anomalies.push({
+      id: p.id,
       title: p.title,
       artist: p.artist,
       score: p.likability,
@@ -354,6 +356,177 @@ export function computeArtistInfluence(parsed: ParsedMusic[], allTags: string[],
   return results;
 }
 
+// ── 标签影响力 (能唱度) ──
+export function computeInfluenceSingability(parsed: ParsedMusic[], allTags: string[], tagIdx: Map<string, number>): InfluenceResult[] {
+  const results: InfluenceResult[] = [], J = 5;
+  const singParsed = parsed.filter(p => p.singability > 0);
+  if (singParsed.length < 10) return results;
+
+  for (let j = 0; j < allTags.length; j++) {
+    const freq = singParsed.filter(p => p.tagVector[j] > 0).length;
+    if (freq < 3) continue;
+
+    const obs = [new Float64Array(J), new Float64Array(J)];
+    for (const p of singParsed) {
+      const ri = p.singability - 1;
+      if (ri < 0 || ri >= J) continue;
+      obs[p.tagVector[j] > 0 ? 0 : 1][ri]++;
+    }
+
+    const rowSums = obs.map(r => r.reduce((a, b) => a + b, 0));
+    const colSums = Array.from({ length: J }, (_, ci) => obs[0][ci] + obs[1][ci]);
+    const total = rowSums.reduce((a, b) => a + b, 0);
+    if (total < 10) continue;
+
+    let chi2 = 0;
+    for (let ri = 0; ri < 2; ri++) {
+      for (let ci = 0; ci < J; ci++) {
+        const expected = rowSums[ri] * colSums[ci] / total;
+        if (expected > 0) chi2 += (obs[ri][ci] - expected) ** 2 / expected;
+      }
+    }
+    const p = Math.exp(-chi2 * 0.45);
+    const highPct = (obs[0][3] + obs[0][4]) / Math.max(rowSums[0], 1);
+    const lowPct = (obs[0][0] + obs[0][1]) / Math.max(rowSums[0], 1);
+    results.push({ tag: allTags[j], net: highPct - lowPct, chi2, p, freq });
+  }
+  results.sort((a, b) => b.net - a.net);
+  return results;
+}
+
+// ── 评分反常歌曲 (能唱度) ──
+export function computeAnomaliesSingability(parsed: ParsedMusic[], allTags: string[], tagIdx: Map<string, number>): AnomalyResult[] {
+  const n = allTags.length;
+  const singParsed = parsed.filter(p => p.singability > 0);
+  const tagAvgs = new Float64Array(n);
+
+  for (let j = 0; j < n; j++) {
+    let s = 0, c = 0;
+    for (const p of singParsed) {
+      if (p.tagVector[j] > 0) { s += p.singability; c++; }
+    }
+    tagAvgs[j] = c >= 3 ? s / c : NaN;
+  }
+
+  const anomalies: AnomalyResult[] = [];
+  for (const p of singParsed) {
+    let sumAvgs = 0, countAvgs = 0;
+    for (let j = 0; j < n; j++) {
+      if (p.tagVector[j] > 0 && !isNaN(tagAvgs[j])) { sumAvgs += tagAvgs[j]; countAvgs++; }
+    }
+    if (countAvgs === 0) continue;
+    const expected = sumAvgs / countAvgs;
+    const diff = p.singability - expected;
+    anomalies.push({
+      title: p.title, artist: p.artist,
+      score: p.singability,
+      ratingLabel: LIKABILITY_LABELS[p.singability] || '',
+      expected, diff, tags: p.tags,
+    });
+  }
+  anomalies.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+  return anomalies;
+}
+
+// ── 最能唱的标签 ──
+export function computeFavoriteTagsSingability(parsed: ParsedMusic[], allTags: string[], tagIdx: Map<string, number>): FavoriteTagResult[] {
+  const results: FavoriteTagResult[] = [];
+  for (let j = 0; j < allTags.length; j++) {
+    let s = 0, c = 0;
+    for (const p of parsed) {
+      if (p.tagVector[j] > 0 && p.singability > 0) { s += p.singability; c++; }
+    }
+    if (c >= 3) {
+      const avg = s / c;
+      results.push({ tag: allTags[j], importance: avg * Math.log(c + 1), avgScore: avg, freq: c });
+    }
+  }
+  results.sort((a, b) => b.importance - a.importance);
+  return results;
+}
+
+// ── 歌手排名构建 ──
+function buildArtistStats(parsed: ParsedMusic[], minSongs = 2) {
+  const byArtist = new Map<string, ParsedMusic[]>();
+  for (const p of parsed) {
+    if (!p.artist) continue;
+    if (!byArtist.has(p.artist)) byArtist.set(p.artist, []);
+    byArtist.get(p.artist)!.push(p);
+  }
+  return byArtist;
+}
+
+// ── 最喜欢的歌手 (喜欢度加权) ──
+export function computeFavoriteArtists(parsed: ParsedMusic[], minSongs = 2): ArtistInfluence[] {
+  const byArtist = buildArtistStats(parsed, minSongs);
+  const results: ArtistInfluence[] = [];
+  for (const [artist, songs] of byArtist) {
+    if (songs.length < minSongs) continue;
+    const avgLike = songs.reduce((s, p) => s + p.likability, 0) / songs.length;
+    const singSongs = songs.filter(p => p.singability > 0);
+    const avgSing = singSongs.length > 0 ? singSongs.reduce((s, p) => s + p.singability, 0) / singSongs.length : 0;
+    const tagFreqs = new Map<string, number>();
+    for (const p of songs) { for (const t of p.tags) tagFreqs.set(t, (tagFreqs.get(t) || 0) + 1); }
+    results.push({
+      artist, count: songs.length, avgLike, avgSing,
+      topTags: [...tagFreqs.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(e => e[0]),
+    });
+  }
+  results.sort((a, b) => b.avgLike - a.avgLike);
+  return results;
+}
+
+// ── 最拟合的歌手 (能唱度加权) ──
+export function computeSingableArtists(parsed: ParsedMusic[], minSongs = 2): ArtistInfluence[] {
+  const byArtist = buildArtistStats(parsed, minSongs);
+  const results: ArtistInfluence[] = [];
+  for (const [artist, songs] of byArtist) {
+    if (songs.length < minSongs) continue;
+    const singSongs = songs.filter(p => p.singability > 0);
+    if (singSongs.length < minSongs) continue;
+    const avgLike = songs.reduce((s, p) => s + p.likability, 0) / songs.length;
+    const avgSing = singSongs.reduce((s, p) => s + p.singability, 0) / singSongs.length;
+    const tagFreqs = new Map<string, number>();
+    for (const p of songs) { for (const t of p.tags) tagFreqs.set(t, (tagFreqs.get(t) || 0) + 1); }
+    results.push({
+      artist, count: songs.length, avgLike, avgSing,
+      topTags: [...tagFreqs.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(e => e[0]),
+    });
+  }
+  results.sort((a, b) => b.avgSing - a.avgSing);
+  return results;
+}
+
+// ── 歌手排名: 喜欢度 ──
+export function computeArtistLikeRanking(parsed: ParsedMusic[], minSongs = 2): ArtistInfluence[] {
+  const byArtist = buildArtistStats(parsed, minSongs);
+  const results: ArtistInfluence[] = [];
+  for (const [artist, songs] of byArtist) {
+    if (songs.length < minSongs) continue;
+    const avgLike = songs.reduce((s, p) => s + p.likability, 0) / songs.length;
+    const singSongs = songs.filter(p => p.singability > 0);
+    const avgSing = singSongs.length > 0 ? singSongs.reduce((s, p) => s + p.singability, 0) / singSongs.length : 0;
+    results.push({ artist, count: songs.length, avgLike, avgSing, topTags: [] });
+  }
+  results.sort((a, b) => b.avgLike - a.avgLike);
+  return results;
+}
+
+// ── 歌手排名: 能唱度 ──
+export function computeArtistSingRanking(parsed: ParsedMusic[], minSongs = 2): ArtistInfluence[] {
+  const byArtist = buildArtistStats(parsed, minSongs);
+  const results: ArtistInfluence[] = [];
+  for (const [artist, songs] of byArtist) {
+    const singSongs = songs.filter(p => p.singability > 0);
+    if (singSongs.length < minSongs) continue;
+    const avgLike = songs.reduce((s, p) => s + p.likability, 0) / songs.length;
+    const avgSing = singSongs.reduce((s, p) => s + p.singability, 0) / singSongs.length;
+    results.push({ artist, count: songs.length, avgLike, avgSing, topTags: [] });
+  }
+  results.sort((a, b) => b.avgSing - a.avgSing);
+  return results;
+}
+
 // ── 主入口 ──
 export function runFullAnalysis(items: MusicAnalysisItem[]) {
   const { parsed, allTags, tagIdx } = parseMusicData(items);
@@ -361,13 +534,19 @@ export function runFullAnalysis(items: MusicAnalysisItem[]) {
 
   return {
     stats, parsed, allTags, tagIdx,
-    tagCombo: () => computeTagComboMatrix(parsed, allTags, tagIdx),
     tagLike: () => computeTagLikeHeatmap(parsed, allTags, tagIdx),
     tagSing: () => computeTagSingHeatmap(parsed, allTags, tagIdx),
     influence: () => computeInfluence(parsed, allTags, tagIdx),
+    influenceSing: () => computeInfluenceSingability(parsed, allTags, tagIdx),
     anomalies: () => computeAnomalies(parsed, allTags, tagIdx),
+    anomaliesSing: () => computeAnomaliesSingability(parsed, allTags, tagIdx),
     favoriteTags: () => computeFavoriteTags(parsed, allTags, tagIdx),
+    favoriteTagsSing: () => computeFavoriteTagsSingability(parsed, allTags, tagIdx),
     voiceAnalysis: () => computeVoiceAnalysis(parsed, allTags, tagIdx),
     artistInfluence: () => computeArtistInfluence(parsed, allTags),
+    artistLikeRanking: () => computeArtistLikeRanking(parsed),
+    artistSingRanking: () => computeArtistSingRanking(parsed),
+    favoriteArtists: () => computeFavoriteArtists(parsed),
+    singableArtists: () => computeSingableArtists(parsed),
   };
 }

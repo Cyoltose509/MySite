@@ -33,6 +33,7 @@ export default function DashboardPage() {
   const [eventGroups, setEventGroups] = useState<EventGroup[]>([]);
   const [animeCount, setAnimeCount] = useState(0);
   const [musicCount, setMusicCount] = useState(0);
+  const [gameCount, setGameCount] = useState(0);
   const [sleepAvg, setSleepAvg] = useState('--');
   const [loading, setLoading] = useState(true);
 
@@ -77,6 +78,11 @@ export default function DashboardPage() {
       .from('music_list')
       .select('*', { count: 'exact', head: true });
 
+    // 游戏总数
+    const { count: gc } = await supabase
+      .from('steam_games')
+      .select('*', { count: 'exact', head: true });
+
     // 睡眠平均时长（最近30天）
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
@@ -105,6 +111,7 @@ export default function DashboardPage() {
     setRecentSleep(sleepData2 || []);
     setAnimeCount(ac || 0);
     setMusicCount(mc || 0);
+    setGameCount(gc || 0);
     setSleepAvg(avgHours);
     setLoading(false);
   };
@@ -166,6 +173,19 @@ export default function DashboardPage() {
               <div style={{ fontSize: 28, marginBottom: 8 }}>🎵</div>
               <div style={{ fontSize: 24, fontWeight: 800, color: C.text, marginBottom: 4 }}>{musicCount}</div>
               <div style={{ fontSize: 12, color: C.textSec, marginBottom: 8 }}>首歌曲</div>
+              <div style={{ fontSize: 11, color: C.accent }}>查看详情 →</div>
+            </div>
+          </Link>
+
+          {/* 游戏统计卡片 */}
+          <Link href="/games" style={{ textDecoration: 'none' }}>
+            <div style={{
+              padding: 16, borderRadius: 14, background: C.surface, border: '1px solid ' + C.border,
+              textAlign: 'center', transition: 'all 0.2s', cursor: 'pointer',
+            }}>
+              <div style={{ fontSize: 28, marginBottom: 8 }}>🎮</div>
+              <div style={{ fontSize: 24, fontWeight: 800, color: C.text, marginBottom: 4 }}>{gameCount}</div>
+              <div style={{ fontSize: 12, color: C.textSec, marginBottom: 8 }}>款游戏</div>
               <div style={{ fontSize: 11, color: C.accent }}>查看详情 →</div>
             </div>
           </Link>

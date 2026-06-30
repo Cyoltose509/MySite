@@ -10,6 +10,7 @@ export function SyncPanel() {
   const [showProgress, setShowProgress] = useState(false);
   const [progressSteps, setProgressSteps] = useState<SyncStep[]>([]);
   const [lastResult, setLastResult] = useState('');
+  const [steamResult, setSteamResult] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const addStep = (step: SyncStep) => {
@@ -37,6 +38,46 @@ export function SyncPanel() {
     setSyncing(null);
   };
 
+  const handleSteamSync = async () => {
+    if (syncing) return;
+    setSyncing('steam');
+    setError(null);
+    setShowProgress(true);
+    setProgressSteps([]);
+    try {
+      addStep({ status: 'running', message: '正在同步游戏列表...' });
+      const resp = await fetch('/api/sync-steam');
+      const json = await resp.json();
+      if (!json.ok) throw new Error(json.error || '同步失败');
+
+      const { count, games } = json;
+      addStep({ status: 'done', message: `✅ 已同步 ${count} 款游戏` });
+
+      if (games?.length) {
+        addStep({ status: 'running', message: '正在获取游戏标签...' });
+        let total = 0;
+        for (const g of games) {
+          const tr = await fetch('/api/sync-steam', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ appid: g.appid, name: g.name }),
+          });
+          const tj = await tr.json();
+          if (tj.ok && tj.tags > 0) {
+            total += tj.tags;
+            addStep({ status: 'running', message: `🎮 ${tj.name} → ${tj.tags} 个标签` });
+          }
+        }
+        addStep({ status: 'done', message: `✅ 共 ${total} 个标签` });
+        setSteamResult(`✅ ${count} 款游戏，${total} 个标签`);
+      }
+    } catch (err: any) {
+      addStep({ status: 'error', message: err.message });
+      setSteamResult('❌ ' + err.message);
+    }
+    setSyncing(null);
+  };
+
   return (
     <div style={styles.card}>
       <h3 style={styles.h3}>🔄 数据同步</h3>
@@ -53,6 +94,10 @@ export function SyncPanel() {
           style={{ ...styles.btn, ...(syncing === 'music' ? styles.btnActive : {}) }}>
           {syncing === 'music' ? '⏳ 同步中...' : '🎵 同步网易云歌单'}
         </button>
+        <button onClick={handleSteamSync} disabled={!!syncing}
+          style={{ ...styles.btn, ...(syncing === 'steam' ? styles.btnActive : {}) }}>
+          {syncing === 'steam' ? '⏳ 同步中...' : '🎮 同步 Steam 游戏库'}
+        </button>
       </div>
 
       {lastResult && (
@@ -61,6 +106,13 @@ export function SyncPanel() {
           background: lastResult.includes('✅') ? 'rgba(74,222,128,0.1)' : 'rgba(248,113,113,0.1)',
           color: lastResult.includes('✅') ? '#4ade80' : '#f87171',
         }}>{lastResult}</p>
+      )}
+      {steamResult && (
+        <p style={{
+          ...styles.result,
+          background: steamResult.includes('✅') ? 'rgba(74,222,128,0.1)' : 'rgba(248,113,113,0.1)',
+          color: steamResult.includes('✅') ? '#4ade80' : '#f87171',
+        }}>{steamResult}</p>
       )}
 
       <div style={styles.info}>

@@ -244,8 +244,8 @@ export default function AnimePage() {
                 </div>
                 {a.tags.length > 0 && (
                   <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
-                    {a.tags.slice(0, 3).map(t => <span key={t} style={tagChipStyle}>{t}</span>)}
-                    {a.tags.length > 3 && <span style={tagMoreStyle}>+{a.tags.length - 3}</span>}
+                    {a.tags.slice(0, 6).map(t => <span key={t} style={tagChipStyle}>{t}</span>)}
+                    {a.tags.length > 6 && <span style={tagMoreStyle}>+{a.tags.length - 6}</span>}
                   </div>
                 )}
               </div>

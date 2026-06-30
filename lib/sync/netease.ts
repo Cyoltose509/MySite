@@ -15,7 +15,7 @@ const NETEASE_BASE = 'https://music.163.com';
 export interface NeteaseTrack {
   id: string;
   name: string;
-  artist: string;
+  artist: string[];
   album: string;
   duration: number;
   tags: string[];
@@ -87,7 +87,7 @@ export async function fetchNeteasePlaylist(
         tracks.push({
           id: String(s.id),
           name: s.name || '',
-          artist: s.artists?.[0]?.name || s.ar?.[0]?.name || 'Unknown',
+          artist: (s.artists || []).map((a: any) => a.name),
           album: s.album?.name || s.al?.name || '',
           duration: (s.duration || s.dt || 0) > 1000
             ? Math.floor((s.duration || s.dt) / 1000)

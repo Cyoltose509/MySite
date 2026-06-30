@@ -1,5 +1,3 @@
-
-
 export interface MusicTag {
     id?: string;
     music_id: string;
@@ -45,11 +43,13 @@ export const MOOD_SCORE_LABELS: Record<number, string> = {
 
 // 音乐标签预设
 export const PRESET_TAGS = [
-    '学习', '工作', '运动', '放松', '睡眠', '开车',
-    '悲伤', '快乐', '愤怒', '恋爱', '怀旧', '励志',
-    '电子', '摇滚', '流行',
-    'ACG', 'Vocaloid', 'OST',
-    '韩语', '和声', '柔情'
+    '放松', '清新',
+    '悲伤', '快乐','恋爱', '励志',
+    '电子', '摇滚',
+    'ACG',  'OST',
+    '韩语', '和声', '柔情','旁白',
+    '多人', '低音炮', '高音炮',
+    'rap', '古风', '同人曲', '喊叫', '念经','紧张'
 ];
 
 

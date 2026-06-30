@@ -21,7 +21,7 @@ import {
 interface MusicRecord {
   id: string;
   title: string;
-  artist: string;
+  artist: string[];
   album?: string;
   duration?: number | null;
   netease_id?: number;
@@ -60,6 +60,7 @@ export default function MusicPage() {
   const [voiceFilter, setVoiceFilter] = useState<string | null>(null);
   const [likabilityFilter, setLikabilityFilter] = useState<number | null>(null);
   const [singabilityFilter, setSingabilityFilter] = useState<number | null>(null);
+  const [artistFilter, setArtistFilter] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [detailMusic, setDetailMusic] = useState<MusicRecord | null>(null);
@@ -111,6 +112,19 @@ export default function MusicPage() {
       .map(([tag, count]) => ({ tag, count }));
   }, [tagsMap]);
 
+  const allArtists = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const m of musicList) {
+      const arr = Array.isArray(m.artist) ? m.artist : [m.artist];
+      for (const a of arr) {
+        if (a && a !== 'Unknown') counts[a] = (counts[a] || 0) + 1;
+      }
+    }
+    return Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .map(([artist, count]) => ({ artist, count }));
+  }, [musicList]);
+
   // Sort: tagged items TOP (only /admin puts tagged at bottom)
   const sorted = [...musicList].sort((a, b) => {
     const aHasTags = (tagsMap[a.id]?.length || 0) > 0;
@@ -132,7 +146,11 @@ export default function MusicPage() {
       const bT = b.created_at || '';
       return bT.localeCompare(aT);
     }
-    if (sortBy === 'artist') return a.artist.localeCompare(b.artist);
+    if (sortBy === 'artist') {
+      const aArt = (a.artist || []).join(' / ');
+      const bArt = (b.artist || []).join(' / ');
+      return aArt.localeCompare(bArt);
+    }
     return a.title.localeCompare(b.title);
   });
 
@@ -152,9 +170,13 @@ export default function MusicPage() {
     ? byLikability.filter(m => (tagsMap[m.id] || []).some(t => t.singability === singabilityFilter))
     : byLikability;
 
-  const filtered = search.trim()
-    ? bySingability.filter(m => m.title.toLowerCase().includes(search.toLowerCase()) || m.artist.toLowerCase().includes(search.toLowerCase()))
+  const byArtist = artistFilter
+    ? bySingability.filter(m => (m.artist || []).some((a: string) => a === artistFilter))
     : bySingability;
+
+  const filtered = search.trim()
+    ? byArtist.filter(m => m.title.toLowerCase().includes(search.toLowerCase()) || (m.artist || []).join(' / ').toLowerCase().includes(search.toLowerCase()))
+    : byArtist;
 
   const fmtDur = (sec: number | null) => {
     if (!sec) return '';
@@ -174,7 +196,7 @@ export default function MusicPage() {
       items.push({
         id: m.id,
         title: m.title,
-        artist: m.artist,
+        artist: (m.artist || []).join(' / '),
         tags: tags.map(t => t.tag),
         likability: firstTag.likability,
         singability: firstTag.singability || 0,
@@ -313,6 +335,24 @@ export default function MusicPage() {
           </div>
         </div>
 
+        {allArtists.length > 0 && (
+          <div style={filterRowStyle}>
+            <span style={filterLabelStyle}>歌手</span>
+            <div style={filterTabsStyle}>
+              <button onClick={() => setArtistFilter(null)}
+                style={{ ...filterTabStyle, ...(artistFilter === null ? filterTabActiveStyle : {}) }}>
+                全部
+              </button>
+              {allArtists.slice(0, 40).map(({ artist, count }) => (
+                <button key={artist} onClick={() => setArtistFilter(artist)}
+                  style={{ ...filterTabStyle, ...(artistFilter === artist ? filterTabActiveStyle : {}) }}>
+                  {artist} <span style={tagCountStyle}>{count}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div style={statsRowStyle}>
           <span>已标记 {taggedCount}</span>
           <span>未标记 {musicList.length - taggedCount}</span>
@@ -320,6 +360,7 @@ export default function MusicPage() {
           {voiceFilter && <span style={{ color: C.accentLt }}>声线: {voiceFilter === 'male' ? '♂' : voiceFilter === 'female' ? '♀' : '♪'}</span>}
           {likabilityFilter && <span style={{ color: C.accentLt }}>♥ {RATING_LABELS[likabilityFilter]}</span>}
           {singabilityFilter && <span style={{ color: C.accentLt }}>🎤 {RATING_LABELS[singabilityFilter]}</span>}
+          {artistFilter && <span style={{ color: C.accentLt }}>歌手: {artistFilter}</span>}
         </div>
       </section>
 
@@ -337,7 +378,7 @@ export default function MusicPage() {
               <div style={cardOverlayStyle} />
               <div style={cardContentStyle}>
                 <p style={cardTitleStyle(hasTags)}>{m.title}</p>
-                <p style={cardArtistStyle}>{m.artist}{m.album && <span style={cardAlbumStyle}> · {m.album}</span>}</p>
+                <p style={cardArtistStyle}>{(m.artist || []).join(' / ')}</p>
                 {m.duration && <span style={cardDurationStyle}>{fmtDur(m.duration)}</span>}
                 <div style={{ display: 'flex', gap: 4 }}>
                   {hasTags && likability && (
@@ -349,10 +390,10 @@ export default function MusicPage() {
                 </div>
                 {hasTags && (
                   <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
-                    {tags.slice(0, 3).map(t => (
+                    {tags.slice(0, 6).map(t => (
                       <span key={t.id} style={tagChipStyle}>{t.tag}</span>
                     ))}
-                    {tags.length > 3 && <span style={tagMoreStyle}>+{tags.length - 3}</span>}
+                    {tags.length > 6 && <span style={tagMoreStyle}>+{tags.length - 6}</span>}
                   </div>
                 )}
               </div>
@@ -383,7 +424,7 @@ export default function MusicPage() {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <h2 style={{ fontSize: 22, fontWeight: 800, color: '#fff', margin: '0 0 6px' }}>{detailMusic.title}</h2>
                 <p style={{ fontSize: 14, color: C.textSec, margin: '4px 0 8px' }}>
-                  {detailMusic.artist}{detailMusic.album && ` · ${detailMusic.album}`}
+                  {detailMusic.artist && (detailMusic.artist as string[]).join(' / ')}{detailMusic.album && ` · ${detailMusic.album}`}
                 </p>
                 <div style={{ display: 'flex', gap: 12, fontSize: 13, color: C.textDim }}>
                   <span>{fmtDur(detailMusic.duration ?? null)}</span>
@@ -442,7 +483,12 @@ export default function MusicPage() {
       )}
 
       {/* Analysis Panel Overlay */}
-      {showAnalysis && <AnalysisPanel items={analysisItems} onClose={() => setShowAnalysis(false)} onTagFilter={(tag) => { setTagFilter(tag); setVoiceFilter(null); setLikabilityFilter(null); setSingabilityFilter(null); setSearch(''); }} />}
+      {showAnalysis && <AnalysisPanel items={analysisItems} onClose={() => setShowAnalysis(false)}
+        onTagFilter={(tag) => { setTagFilter(tag); setVoiceFilter(null); setLikabilityFilter(null); setSingabilityFilter(null); setArtistFilter(null); setSearch(''); }}
+        onVoiceFilter={(voice) => { setVoiceFilter(voice); setTagFilter(null); setLikabilityFilter(null); setSingabilityFilter(null); setArtistFilter(null); setSearch(''); }}
+        onArtistFilter={(artist) => { setArtistFilter(artist); setTagFilter(null); setVoiceFilter(null); setLikabilityFilter(null); setSingabilityFilter(null); setSearch(''); }}
+        onSelectSong={(id) => { const m = musicList.find(x => x.id === id); if (m) setDetailMusic(m); }}
+      />}
     </div>
   );
 }

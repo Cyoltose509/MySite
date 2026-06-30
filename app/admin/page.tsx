@@ -6,14 +6,16 @@ import { isAuthenticated, clearSession } from '@/lib/auth';
 import { withBasePath } from '@/lib/base-path';
 import { SyncPanel } from '@/components/admin/SyncPanel';
 import { MusicTagEditor } from '@/components/admin/MusicTagEditor';
+import { SteamGameEditor } from '@/components/admin/SteamGameEditor';
 import { MoodLogger } from '@/components/admin/MoodLogger';
 import { EventCounter } from '@/components/admin/EventCounter';
 
-type TabId = 'sync' | 'music' | 'mood' | 'events';
+type TabId = 'sync' | 'music' | 'games' | 'mood' | 'events';
 
 const TABS: { id: TabId; label: string; icon: string }[] = [
   { id: 'sync', label: '数据同步', icon: '🔄' },
   { id: 'music', label: '音乐标签', icon: '🎵' },
+  { id: 'games', label: '游戏标签', icon: '🎮' },
   { id: 'mood', label: '心情记录', icon: '🧠' },
   { id: 'events', label: '事件计数', icon: '📅' },
 ];
@@ -86,6 +88,7 @@ export default function AdminPage() {
       <main style={styles.content}>
         {activeTab === 'sync' && <SyncPanel />}
         {activeTab === 'music' && <MusicTagEditor />}
+        {activeTab === 'games' && <SteamGameEditor />}
         {activeTab === 'mood' && <MoodLogger />}
         {activeTab === 'events' && <EventCounter />}
       </main>

@@ -6,7 +6,7 @@ import {getSession} from '@/lib/auth';
 import {
     C, cardGridStyle, cardStyle, cardContentStyle,
     cardTitleStyle, cardArtistStyle, cardAlbumStyle,
-    badgeStyle, tagChipStyle, emptyStyle,
+    badgeStyle, tagChipStyle, tagMoreStyle, emptyStyle,
     filterRowStyle, countBadgeStyle,
     searchInputStyle, loadingContainerStyle, spinnerStyle, loadingTextStyle,
 } from '@/lib/card-styles';
@@ -19,7 +19,7 @@ const RATING_LABELS = ['', '拉完了', 'NPC', '人上人', '顶级', '夯'];
 interface MusicItem {
     id: string;
     title: string;
-    artist: string;
+    artist: string[];
     album?: string;
     netease_id?: number | string;
 }
@@ -61,7 +61,7 @@ export function MusicTagEditor() {
     const sortedList = useMemo(() => {
         const q = search.toLowerCase();
         const filtered = search.trim()
-            ? musicList.filter(m => m.title.toLowerCase().includes(q) || m.artist.toLowerCase().includes(q))
+            ? musicList.filter(m => m.title.toLowerCase().includes(q) || (m.artist || []).join(' / ').toLowerCase().includes(q))
             : musicList;
         return [...filtered.filter(m => !tagsMap[m.id]?.[0]?.voice), ...filtered.filter(m => tagsMap[m.id]?.[0]?.voice)];
     }, [musicList, search, tagsMap]);
@@ -197,7 +197,7 @@ export function MusicTagEditor() {
             ) : (
                 <div style={cardGridStyle}>
                     {sortedList.map(m => {
-                        const tagged = tagsMap[m.id]?.[0]?.voice ? true : false;
+                        const tagged = !!tagsMap[m.id]?.[0]?.voice;
                         const sel = selectedId === m.id;
                         return (
                             <div key={m.id} onClick={() => handleSelect(m)} style={{
@@ -213,15 +213,27 @@ export function MusicTagEditor() {
                             }}>
                                 <div style={cardContentStyle}>
                                     <div style={cardTitleStyle(false)}>{m.title}</div>
-                                    <div style={cardArtistStyle}>{m.artist}</div>
-                                    {m.album && <div style={cardAlbumStyle}>{m.album}</div>}
+                                    <div style={cardArtistStyle}>{(m.artist || []).join(' / ')}</div>
                                     <div style={{marginTop: 6, display: 'flex', gap: 4, flexWrap: 'wrap'}}>
-                                        {tagged ? (
-                                            <span style={badgeStyle('rgba(99,102,241,1)')}>已标记</span>
-                                        ) : (
-                                            <span style={badgeStyle('rgba(255,255,255,0.06)')}>未标记</span>
-                                        )}
+                                        {(() => {
+                                          const tgs = tagsMap[m.id] || [];
+                                          const t = tgs[0];
+                                          return <>
+                                            {t?.likability && <span style={badgeStyle(C.red)}>♥{RATING_LABELS[t.likability]}</span>}
+                                            {t?.singability && <span style={badgeStyle(C.accentLt)}>🎤{RATING_LABELS[t.singability]}</span>}
+                                          </>;
+                                        })()}
                                     </div>
+                                    {(() => {
+                                      const tgs = tagsMap[m.id] || [];
+                                      if (tgs.length === 0) return <div style={{marginTop: 6, display: 'flex', gap: 4, flexWrap: 'wrap'}}>
+                                        <span style={badgeStyle('rgba(255,255,255,0.06)')}>未标记</span>
+                                      </div>;
+                                      return <div style={{marginTop: 6, display: 'flex', gap: 3, flexWrap: 'wrap'}}>
+                                        {tgs.slice(0, 6).map(t => <span key={t.id} style={tagChipStyle}>{t.tag}</span>)}
+                                        {tgs.length > 6 && <span style={tagMoreStyle}>+{tgs.length - 6}</span>}
+                                      </div>;
+                                    })()}
                                 </div>
                             </div>
                         );
@@ -239,7 +251,7 @@ export function MusicTagEditor() {
                     {/* close bar */}
                     <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16}}>
                         <h4 style={{margin: 0, fontSize: 14, color: C.text, fontWeight: 600}}>
-                            ✏️ {selectedMusic.title} - {selectedMusic.artist}
+                            ✏️ {selectedMusic.title} - {(selectedMusic.artist || []).join(' / ')}
                         </h4>
                         <button onClick={() => {
                             setShowEditor(false);
