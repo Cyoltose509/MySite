@@ -77,11 +77,19 @@ export default function MusicPage() {
     }
     setMusicList(data || []);
 
-    const { data: tags, error: tagsError } = await supabase.from('music_tags').select('*');
-    if (tagsError) console.warn('加载标签失败:', tagsError.message);
-    if (tags) {
+    let allTags: any[] = [];
+    let page = 0;
+    while (true) {
+      const { data: tags, error: tagsError } = await supabase.from('music_tags').select('*').range(page * 1000, (page + 1) * 1000 - 1);
+      if (tagsError) { console.warn('加载标签失败:', tagsError.message); break; }
+      if (!tags || tags.length === 0) break;
+      allTags = allTags.concat(tags);
+      if (tags.length < 1000) break;
+      page++;
+    }
+    if (allTags) {
       const map: Record<string, MusicTagData[]> = {};
-      tags.forEach((t: any) => {
+      allTags.forEach((t: any) => {
         if (!map[t.music_id]) map[t.music_id] = [];
         map[t.music_id].push(t);
       });

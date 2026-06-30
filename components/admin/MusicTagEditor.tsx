@@ -47,15 +47,22 @@ export function MusicTagEditor() {
     const fetchData = async () => {
         const {data: music} = await supabase.from('music_list').select('*').order('title', {ascending: true}).limit(500);
         setMusicList(music || []);
-        const {data: tags} = await supabase.from('music_tags').select('*');
-        if (tags) {
-            const map: Record<string, MusicTag[]> = {};
-            tags.forEach((t: any) => {
-                if (!map[t.music_id]) map[t.music_id] = [];
-                map[t.music_id].push(t as MusicTag);
-            });
-            setTagsMap(map);
+        // Fetch all tags via pagination (Supabase server caps at 1000 per request)
+        let allTags: any[] = [];
+        let page = 0;
+        while (true) {
+          const {data: tags} = await supabase.from('music_tags').select('*').range(page * 1000, (page + 1) * 1000 - 1);
+          if (!tags || tags.length === 0) break;
+          allTags = allTags.concat(tags);
+          if (tags.length < 1000) break;
+          page++;
         }
+        const map: Record<string, MusicTag[]> = {};
+        allTags.forEach((t: any) => {
+          if (!map[t.music_id]) map[t.music_id] = [];
+          map[t.music_id].push(t as MusicTag);
+        });
+        setTagsMap(map);
     };
 
     const sortedList = useMemo(() => {
@@ -118,7 +125,7 @@ export function MusicTagEditor() {
         }
         const final = [...new Set(selectedTags.filter(Boolean))];
         if (!final.length) {
-            setMessage({text: '至少需要一个标签', type: 'err'});
+            setMessage({text: '至少需要一个标签（想清空标签请全部删除后刷新页面）', type: 'err'});
             return;
         }
         setLoading(true);
