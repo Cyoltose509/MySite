@@ -13,10 +13,11 @@ import {
   controlsStyle, sourceNoteStyle, filterRowStyle, filterLabelStyle,
   filterTabsStyle, filterTabStyle, filterTabActiveStyle, tagCountStyle, statsRowStyle,
   searchInputStyle, modalOverlayStyle, modalStyle, modalCloseStyle,
-  modalCoverPlaceholderStyle, loadingContainerStyle, spinnerStyle, loadingTextStyle,
+  modalCoverPlaceholderStyle,
   errorBoxStyle, errorTitleStyle, errorMsgStyle, retryBtnStyle,
   scoreRowStyle, scoreBarContainerStyle, scoreLabelStyle, scoreNumStyle,
 } from '@/lib/card-styles';
+import { PageLoading } from '@/components/shared';
 
 interface MusicRecord {
   id: string;
@@ -216,7 +217,7 @@ export default function MusicPage() {
   }, [musicList, tagsMap]);
 
   if (loading) {
-    return <div style={loadingContainerStyle}><div style={spinnerStyle} /><p style={loadingTextStyle}>加载中...</p></div>;
+    return <PageLoading text="加载音乐..." />;
   }
 
   if (error) {
@@ -489,6 +490,7 @@ export default function MusicPage() {
           </div>
         </div>
       )}
+      </div>
 
       {/* Analysis Panel Overlay */}
       {showAnalysis && <AnalysisPanel items={analysisItems} onClose={() => setShowAnalysis(false)}

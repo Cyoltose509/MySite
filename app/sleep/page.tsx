@@ -4,6 +4,7 @@ import { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { isAuthenticated } from '@/lib/auth';
+import { TYPE_LABELS, TYPE_COLORS, utcToBeijing } from '@/lib/sleep-utils';
 
 interface SleepLog {
   id: string;
@@ -13,41 +14,10 @@ interface SleepLog {
   duration_minutes: number;
 }
 
-const TYPE_LABELS: Record<string, string> = {
-  in_bed: '卧床',
-  asleep_core: '核心',
-  asleep_deep: '深度',
-  asleep_rem: 'REM',
-  asleep_awake: '清醒',
-  asleep_unspecified: '睡眠',
-};
-
-const TYPE_COLORS: Record<string, string> = {
-  in_bed: '#7c3aed',
-  asleep_core: '#2563eb',
-  asleep_deep: '#059669',
-  asleep_rem: '#db2777',
-  asleep_awake: '#d97706',
-  asleep_unspecified: '#6366f1',
-};
-
 const COL_W = 56;
 const TIME_AXIS_W = 52;
 const TOP_PAD = 24;
 const BOT_PAD = 40;
-
-// 将 UTC 时间字符串转为北京时间
-function utcToBeijing(utcIsoStr: string): { beijingHr: number; beijingDateStr: string } {
-  const d = new Date(utcIsoStr);
-  const beijingMs = d.getTime() + 8 * 3600 * 1000;
-  const beijingDate = new Date(beijingMs);
-  const msInDay = beijingMs % 86400000;
-  const beijingHr = msInDay / 3600000;
-  const y = beijingDate.getUTCFullYear();
-  const m = String(beijingDate.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(beijingDate.getUTCDate()).padStart(2, '0');
-  return { beijingHr, beijingDateStr: `${y}-${m}-${day}` };
-}
 
 export default function SleepPage() {
   const [logs, setLogs] = useState<SleepLog[]>([]);

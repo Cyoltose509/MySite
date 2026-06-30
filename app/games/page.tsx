@@ -3,6 +3,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
+import { PageLoading } from '@/components/shared';
 import {
   C, pageStyle, cardGridStyle, cardStyle, cardBgStyle, cardOverlayStyle, cardContentStyle, cardTitleStyle, cardArtistStyle, cardDurationStyle,
   badgeStyle, tagChipStyle, tagMoreStyle, emptyStyle,
@@ -11,7 +12,6 @@ import {
   filterTabsStyle, filterTabStyle, filterTabActiveStyle, statsRowStyle,
   searchInputStyle,
   modalOverlayStyle, modalStyle, modalCloseStyle,
-  loadingContainerStyle, spinnerStyle, loadingTextStyle,
 } from '@/lib/card-styles';
 
 interface GameRecord {
@@ -116,7 +116,7 @@ export default function GamesPage() {
     return `https://cdn.cloudflare.steamstatic.com/steam/apps/${g.steam_app_id}/header.jpg`;
   };
 
-  if (loading) return <div style={loadingContainerStyle}><div style={spinnerStyle} /><p style={loadingTextStyle}>加载中...</p></div>;
+  if (loading) return <PageLoading text="加载游戏库..." />;
 
   const detailTags = detailGame ? (tagsMap[detailGame.id] || []) : [];
 
@@ -248,6 +248,7 @@ export default function GamesPage() {
               </div>
             )}
           </div>
+        )}
         </div>
       )}
     </div>

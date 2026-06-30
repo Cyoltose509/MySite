@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState, useMemo } from 'react';
-import Link from 'next/link';
 import type { AnimeItem as AnimeItemType } from '@/lib/anime-data';
 import {
   C, pageStyle, cardGridStyle, cardStyle, cardBgStyle, cardOverlayStyle,
@@ -10,9 +9,11 @@ import {
   controlsStyle, filterRowStyle, filterLabelStyle,
   filterTabsStyle, filterTabStyle, filterTabActiveStyle, statsRowStyle,
   searchInputStyle, modalOverlayStyle, modalStyle, modalCloseStyle,
-  modalCoverPlaceholderStyle, loadingContainerStyle, spinnerStyle, loadingTextStyle,
+  modalCoverPlaceholderStyle,
   badgeStyle,
 } from '@/lib/card-styles';
+import Link from 'next/link';
+import { PageLoading } from '@/components/shared';
 
 import { getAnimeList, getAnimeCovers, getAnimeQuartzLink, clearAnimeCache } from '@/lib/anime-data';
 import AnalysisPanel from '@/components/anime/AnalysisPanel';
@@ -110,7 +111,7 @@ export default function AnimePage() {
   }, [animeList]);
 
   if (loading) {
-    return <div style={loadingContainerStyle}><div style={spinnerStyle} /><p style={loadingTextStyle}>加载中...</p></div>;
+    return <PageLoading text="加载番剧..." />;
   }
 
   /* detail modal helpers */
@@ -309,6 +310,7 @@ export default function AnimePage() {
               </div>
             )}
           </div>
+        )
         </div>
       )}
 

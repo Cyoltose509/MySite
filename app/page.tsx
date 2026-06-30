@@ -7,6 +7,8 @@ import { isAuthenticated } from '@/lib/auth';
 import { withBasePath } from '@/lib/base-path';
 import { MOOD_EMOJIS, MOOD_SCORE_LABELS } from '@/lib/types';
 import { C, pageStyle, headerStyle, h1Style, backLinkStyle, loadingContainerStyle, spinnerStyle, loadingTextStyle } from '@/lib/card-styles';
+import { SleepTimeline } from '@/components/sleep/SleepTimeline';
+import { groupByDay } from '@/lib/sleep-utils';
 
 interface MoodLog {
   id: string;
@@ -46,8 +48,9 @@ export default function DashboardPage() {
     setLoading(true);
     const loggedIn = isAuthenticated();
 
-    // 心情动态
-    let moodQ = supabase.from('mood_logs').select('*').order('created_at', { ascending: false });
+    // 心情动态 - 最近3天
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+    let moodQ = supabase.from('mood_logs').select('*').order('created_at', { ascending: false }).gte('created_at', threeDaysAgo);
     if (!loggedIn) moodQ = moodQ.eq('visibility', 'public');
 
     // 事件组
@@ -100,15 +103,20 @@ export default function DashboardPage() {
     }
 
     const { data: moodData } = await moodQ.limit(8);
+    // 今日睡眠 — 取最近 48h 数据，选最近一天北京时间的记录
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
     const { data: sleepData2 } = await supabase
       .from('health_sleep')
       .select('*')
-      .order('start_date', { ascending: false })
-      .limit(5);
+      .gte('start_date', twoDaysAgo)
+      .order('start_date', { ascending: true });
 
     setEventGroups(groupsWithCount);
     setRecentMoods(moodData || []);
-    setRecentSleep(sleepData2 || []);
+    // 只显示最近一天的睡眠
+    const days = groupByDay(sleepData2 || []);
+    const latestDay = days[days.length - 1];
+    setRecentSleep(latestDay?.segs || []);
     setAnimeCount(ac || 0);
     setMusicCount(mc || 0);
     setGameCount(gc || 0);
@@ -258,37 +266,14 @@ export default function DashboardPage() {
         </div>
       </section>
 
-      {/* 最近睡眠 */}
+      {/* 今日睡眠 */}
       {recentSleep.length > 0 && (
         <section style={{ marginBottom: 32 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-            <h2 style={{ fontSize: 16, fontWeight: 600, color: C.text, margin: 0 }}>😴 最近睡眠</h2>
+            <h2 style={{ fontSize: 16, fontWeight: 600, color: C.text, margin: 0 }}>😴 今日睡眠</h2>
             <Link href="/sleep" style={{ fontSize: 12, color: C.accent, textDecoration: 'none' }}>查看全部 →</Link>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {recentSleep.map((s, i) => (
-              <div key={s.id || i} style={{
-                display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
-                borderRadius: 10, background: C.surface, border: '1px solid ' + C.border,
-              }}>
-                <span style={{ fontSize: 10, color: C.textDead, fontFamily: 'monospace', minWidth: 90 }}>
-                  {s.start_date.slice(0, 10)}
-                </span>
-                <span style={{
-                  fontSize: 11, color: s.sleep_type === 'in_bed' ? '#818cf8' : '#6366f1', minWidth: 70,
-                }}>
-                  {s.sleep_type === 'in_bed' ? '卧床' : s.sleep_type === 'asleep_core' ? '核心' : s.sleep_type === 'asleep_deep' ? '深度' : s.sleep_type === 'asleep_rem' ? 'REM' : '睡眠'}
-                </span>
-                <span style={{ fontSize: 12, color: C.text, fontWeight: 600 }}>
-                  {s.duration_minutes}分钟
-                </span>
-                <span style={{ fontSize: 10, color: C.textDead, fontFamily: 'monospace' }}>
-                  {new Date(s.start_date).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })} ~
-                  {new Date(s.end_date).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
-                </span>
-              </div>
-            ))}
-          </div>
+          <SleepTimeline segments={recentSleep} />
         </section>
       )}
 
