@@ -47,7 +47,15 @@ export default function AnalysisPanel({
   onSelectSong: (id: string) => void;
 }) {
   const analysis = useRef(runFullAnalysis(items));
-  const a = analysis.current;
+  const [voiceFilter, setVoiceFilter] = useState<string | null>(null);
+  const a = useRef(analysis.current);
+
+  // Re-run analysis when voice filter changes
+  const rerun = useCallback((vf: string | null) => {
+    setVoiceFilter(vf);
+    const filtered = vf ? items.filter(i => i.voice === vf) : items;
+    a.current = runFullAnalysis(filtered);
+  }, [items]);
   const [panelW, setPanelW] = useState(680);
   const dragging = useRef(false);
   const justDragged = useRef(false);
@@ -67,18 +75,25 @@ export default function AnalysisPanel({
   const [singableArtists, setSingableArtists] = useState<ArtistInfluence[] | null>(null);
 
   useEffect(() => {
-    setTimeout(() => setTagLike(a.tagLike()), 60);
-    setTimeout(() => setTagSing(a.tagSing()), 120);
-    setTimeout(() => setInfluence(a.influence()), 180);
-    setTimeout(() => setInfluenceSing(a.influenceSing()), 240);
-    setTimeout(() => setVoiceAnalysis(a.voiceAnalysis()), 300);
-    setTimeout(() => setFavoriteTags(a.favoriteTags()), 360);
-    setTimeout(() => setFavoriteTagsSing(a.favoriteTagsSing()), 420);
-    setTimeout(() => setAnomalies(a.anomalies()), 480);
-    setTimeout(() => setAnomaliesSing(a.anomaliesSing()), 540);
-    setTimeout(() => setFavoriteArtists(a.favoriteArtists()), 600);
-    setTimeout(() => setSingableArtists(a.singableArtists()), 660);
-  }, []);
+    const an = a.current;
+    // Reset
+    setTagLike(null); setTagSing(null); setInfluence(null); setInfluenceSing(null);
+    setVoiceAnalysis(null); setFavoriteTags(null); setFavoriteTagsSing(null);
+    setAnomalies(null); setAnomaliesSing(null);
+    setFavoriteArtists(null); setSingableArtists(null);
+    // Stagger recompute
+    setTimeout(() => setTagLike(an.tagLike()), 60);
+    setTimeout(() => setTagSing(an.tagSing()), 120);
+    setTimeout(() => setInfluence(an.influence()), 180);
+    setTimeout(() => setInfluenceSing(an.influenceSing()), 240);
+    setTimeout(() => setVoiceAnalysis(an.voiceAnalysis()), 300);
+    setTimeout(() => setFavoriteTags(an.favoriteTags()), 360);
+    setTimeout(() => setFavoriteTagsSing(an.favoriteTagsSing()), 420);
+    setTimeout(() => setAnomalies(an.anomalies()), 480);
+    setTimeout(() => setAnomaliesSing(an.anomaliesSing()), 540);
+    setTimeout(() => setFavoriteArtists(an.favoriteArtists()), 600);
+    setTimeout(() => setSingableArtists(an.singableArtists()), 660);
+  }, [voiceFilter]);
 
   const onMouseDown = useCallback((e: React.MouseEvent) => {
     e.stopPropagation(); e.preventDefault();
@@ -102,7 +117,7 @@ export default function AnalysisPanel({
     return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
   }, []);
 
-  const s = a.stats;
+  const s = a.current.stats;
   const cardContentW = (panelW - 48 - 32 - 16) / 2;
 
   return (
@@ -115,9 +130,17 @@ export default function AnalysisPanel({
           <div style={styles.headerBar}>
             <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.text }}>🎵 音乐偏好分析</h2>
             <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-              <span style={styles.badge}>{s.total} 首 · {a.allTags.length} 标签</span>
+              <span style={styles.badge}>{s.total} 首 · {a.current.allTags.length} 标签</span>
               <span style={{ ...styles.badge2, color: C.red }}>平均喜欢 {(s.avgLikability).toFixed(1)}</span>
               <span style={{ ...styles.badge2, color: C.purple }}>平均能唱 {(s.avgSingability).toFixed(1)}</span>
+              {['全部', '男生', '女生', '男女'].map((label, i) => {
+                const v = [null, 'male', 'female', 'duet'][i];
+                const active = voiceFilter === v;
+                return <button key={label} onClick={() => rerun(v)}
+                  style={{ padding: '4px 12px', borderRadius: 20, border: '1px solid ' + (active ? C.accent : C.border),
+                    background: active ? 'rgba(99,102,241,0.15)' : 'transparent', color: active ? C.accent : C.dim,
+                    fontSize: 11, cursor: 'pointer' }}>{label}</button>;
+              })}
               <button onClick={onClose} style={styles.closeBtn}>✕</button>
             </div>
           </div>
@@ -344,7 +367,7 @@ const tdC = { padding: '4px 6px', textAlign: 'center' as const, color: C.text };
 
 // ── ArtistBarChart (single metric, one bar per artist) ──
 function ArtistBarChart({ data, maxW, color, valueKey, suffix, onArtistClick }: { data: ArtistInfluence[]; maxW: number; color: string; valueKey: 'avgLike' | 'avgSing'; suffix: string; onArtistClick: (a: string) => void }) {
-  const barH = 24, gap = 5, pad = { left: 70, right: 80 };
+  const barH = 24, gap = 5, pad = { left: 70, right: 70 };
   const h = (barH + gap) * data.length + 16;
   const plotW = Math.max(maxW - pad.left - pad.right, 100);
   const vals = data.map(d => d[valueKey]);
@@ -357,7 +380,7 @@ function ArtistBarChart({ data, maxW, color, valueKey, suffix, onArtistClick }: 
       return <g key={d.artist} className="bar-hover" onClick={() => onArtistClick(d.artist)}>
         <text x={pad.left - 4} y={y + barH / 2 + 4} textAnchor="end" fontSize={9} fill={C.dim}
           style={{ cursor: 'pointer' }}>
-          {d.artist.length > 7 ? d.artist.slice(0, 6) + '…' : d.artist}
+          {d.artist.length > 14 ? d.artist.slice(0, 13) + '…' : d.artist}
         </text>
         <rect x={pad.left} y={y} width={Math.max(bw, 2)} height={barH} rx={5} fill={color} opacity={0.7} />
         <text x={pad.left + bw + 6} y={y + barH / 2 + 4} fontSize={9} fill={C.text}>
