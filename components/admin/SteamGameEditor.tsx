@@ -47,6 +47,8 @@ export function SteamGameEditor() {
   const [newMetricVal, setNewMetricVal] = useState('');
   const [newMetricCustomKey, setNewMetricCustomKey] = useState('');
   const [editTitle, setEditTitle] = useState('');
+  const [editStoreUrl, setEditStoreUrl] = useState('');
+  const [editCustomCover, setEditCustomCover] = useState('');
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
   const [addTitle, setAddTitle] = useState('');
@@ -88,6 +90,8 @@ export function SteamGameEditor() {
   const handleSelect = (g: GameRecord) => {
     setSelectedId(g.id); setSelectedGame(g);
     setEditTitle(g.title);
+    setEditStoreUrl(g.store_url || '');
+    setEditCustomCover(g.custom_cover || '');
     const tags = tagsMap[g.id] || [];
     setSelectedTags(tags.map(t => t.tag));
     setRating(tags[0]?.rating || '');
@@ -109,7 +113,7 @@ export function SteamGameEditor() {
       p_rating: rating || null, p_note: note || null,
     });
     if (!error) {
-      await supabase.from('steam_games').update({ playtime_forever: pt, metrics, title: editTitle }).eq('id', selectedId);
+      await supabase.from('steam_games').update({ playtime_forever: pt, metrics, title: editTitle, store_url: editStoreUrl || null, custom_cover: editCustomCover || null }).eq('id', selectedId);
     }
     setSaving(false);
     if (error) { setMsg('❌ 保存失败'); } else { setMsg('✅ 已保存'); fetchData(); }
@@ -238,9 +242,15 @@ export function SteamGameEditor() {
         <div style={{ position: 'fixed', top: 0, right: 0, width: 420, maxWidth: '90vw', height: '100vh',
           background: C.bg, borderLeft: '1px solid rgba(255,255,255,0.08)', padding: 20, overflowY: 'auto',
           zIndex: 100, boxShadow: '-4px 0 24px rgba(0,0,0,0.3)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <input value={editTitle} onChange={e => setEditTitle(e.target.value)}
-              style={{ ...iS, fontWeight: 600, fontSize: 14, marginBottom: 12 }} />
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+            <div style={{ flex: 1 }}>
+              <input value={editTitle} onChange={e => setEditTitle(e.target.value)}
+                style={{ ...iS, fontWeight: 600, fontSize: 14, marginBottom: 8 }} />
+              <input value={editStoreUrl} onChange={e => setEditStoreUrl(e.target.value)}
+                placeholder="商店链接" style={{ ...iS, fontSize: 11, marginBottom: 6, padding: '5px 10px' }} />
+              <input value={editCustomCover} onChange={e => setEditCustomCover(e.target.value)}
+                placeholder="封面图链接" style={{ ...iS, fontSize: 11, padding: '5px 10px' }} />
+            </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <button onClick={() => handleBlacklist(selectedGame)}
                 style={actBtn('#3b1818', '#f87171')}>黑名单</button>
