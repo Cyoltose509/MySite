@@ -151,8 +151,7 @@ export default function GamesPage() {
     };
     const metricChip = (k?: string) => ({
         fontSize: 11, color: '#a1a1aa', padding: '2px 8px', borderRadius: 6,
-        background: '#16162a', border: '1px solid #27273d', whiteSpace: 'nowrap' as const,
-        display: 'flex', alignItems: 'center', gap: 3,
+        background: '#16162a', border: '1px solid #27273d', display: 'flex', alignItems: 'center', gap: 3,
     });
 
     const ratings = ['夯', '顶级', '人上人', 'NPC', '拉完了'];
@@ -291,7 +290,7 @@ export default function GamesPage() {
                             )}
                             <div>
                                 <h2 style={{fontSize: 22, fontWeight: 800, color: '#fff', margin: '0 0 8px'}}>{detailGame.title}</h2>
-                                <div style={{display: 'flex', gap: 8, marginBottom: 6}}>
+                                <div style={{display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 6}}>
                                     {detailTags[0]?.rating && <span style={{
                                         ...badgeStyle(RATING_COLORS[detailTags[0].rating]),
                                         fontSize: 13,
