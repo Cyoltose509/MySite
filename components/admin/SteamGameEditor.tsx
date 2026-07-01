@@ -46,12 +46,12 @@ export function SteamGameEditor() {
   const [newMetricKey, setNewMetricKey] = useState('');
   const [newMetricVal, setNewMetricVal] = useState('');
   const [newMetricCustomKey, setNewMetricCustomKey] = useState('');
+  const [editTitle, setEditTitle] = useState('');
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
   const [addTitle, setAddTitle] = useState('');
   const [addUrl, setAddUrl] = useState('');
   const [addCover, setAddCover] = useState('');
-  const [addPlaytime, setAddPlaytime] = useState('');
 
   useEffect(() => { fetchData(); }, []);
 
@@ -87,6 +87,7 @@ export function SteamGameEditor() {
 
   const handleSelect = (g: GameRecord) => {
     setSelectedId(g.id); setSelectedGame(g);
+    setEditTitle(g.title);
     const tags = tagsMap[g.id] || [];
     setSelectedTags(tags.map(t => t.tag));
     setRating(tags[0]?.rating || '');
@@ -108,7 +109,7 @@ export function SteamGameEditor() {
       p_rating: rating || null, p_note: note || null,
     });
     if (!error) {
-      await supabase.from('steam_games').update({ playtime_forever: pt, metrics }).eq('id', selectedId);
+      await supabase.from('steam_games').update({ playtime_forever: pt, metrics, title: editTitle }).eq('id', selectedId);
     }
     setSaving(false);
     if (error) { setMsg('❌ 保存失败'); } else { setMsg('✅ 已保存'); fetchData(); }
@@ -142,12 +143,11 @@ export function SteamGameEditor() {
   };
   const handleAdd = async () => {
     if (!addTitle.trim()) return;
-    const pt = parseInt(addPlaytime) || 0;
     const { error } = await supabase.from('steam_games').insert({
-      steam_app_id: 0, title: addTitle.trim(), playtime_forever: pt, is_manual: true,
+      steam_app_id: -Date.now(), title: addTitle.trim(), playtime_forever: 0, is_manual: true,
       store_url: addUrl.trim() || null, custom_cover: addCover.trim() || null,
     });
-    if (error) { setMsg('❌ ' + error.message); } else { setMsg('✅ 已添加'); setAddTitle(''); setAddUrl(''); setAddCover(''); setAddPlaytime(''); fetchData(); }
+    if (error) { setMsg('❌ ' + error.message); } else { setMsg('✅ 已添加'); setAddTitle(''); setAddUrl(''); setAddCover(''); fetchData(); }
     setTimeout(() => setMsg(''), 2000);
   };
 
@@ -223,8 +223,6 @@ export function SteamGameEditor() {
         <div style={{ maxWidth: 500 }}>
           <div style={{ marginBottom: 12 }}><label style={lbl}>游戏名 *</label>
             <input value={addTitle} onChange={e => setAddTitle(e.target.value)} placeholder="例如：Hollow Knight" style={iS} /></div>
-          <div style={{ marginBottom: 12 }}><label style={lbl}>游玩时长 (分钟)</label>
-            <input value={addPlaytime} onChange={e => setAddPlaytime(e.target.value)} placeholder="0" type="number" style={iS} /></div>
           <div style={{ marginBottom: 12 }}><label style={lbl}>商店链接 (可选)</label>
             <input value={addUrl} onChange={e => setAddUrl(e.target.value)} placeholder="https://..." style={iS} /></div>
           <div style={{ marginBottom: 16 }}><label style={lbl}>封面图链接 (可选)</label>
@@ -241,7 +239,8 @@ export function SteamGameEditor() {
           background: C.bg, borderLeft: '1px solid rgba(255,255,255,0.08)', padding: 20, overflowY: 'auto',
           zIndex: 100, boxShadow: '-4px 0 24px rgba(0,0,0,0.3)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <h4 style={{ margin: 0, fontSize: 14, color: C.text, fontWeight: 600 }}>✏️ {selectedGame.title}</h4>
+            <input value={editTitle} onChange={e => setEditTitle(e.target.value)}
+              style={{ ...iS, fontWeight: 600, fontSize: 14, marginBottom: 12 }} />
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <button onClick={() => handleBlacklist(selectedGame)}
                 style={actBtn('#3b1818', '#f87171')}>黑名单</button>
