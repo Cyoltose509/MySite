@@ -56,8 +56,9 @@ export default function AnimePage() {
   }, [animeList]);
 
   const fetchAnime = async () => {
+    let list: AnimeItemType[] = [];
     try {
-      const list = await getAnimeList();
+      list = await getAnimeList();
       setAnimeList(list);
     } catch (e: any) {
       console.error('Failed to load anime list:', e);
