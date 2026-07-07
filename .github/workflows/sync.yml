@@ -1,0 +1,21 @@
+name: Auto Sync Data
+
+on:
+  workflow_dispatch:  # 仅手动触发，不自动运行
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Sync Music
+        run: node scripts/sync-music.mjs
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NEXT_PUBLIC_ADMIN_PASSWORD_HASH: ${{ secrets.NEXT_PUBLIC_ADMIN_PASSWORD_HASH }}
