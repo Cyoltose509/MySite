@@ -3,7 +3,6 @@
 import { useEffect, useState, useMemo } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
-import { supabase } from '@/lib/supabase';
 import AnalysisPanel from '@/components/music/AnalysisPanel';
 import type { MusicAnalysisItem } from '@/lib/music-analysis';
 import {
