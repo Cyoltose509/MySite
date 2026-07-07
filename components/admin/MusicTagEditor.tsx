@@ -75,11 +75,14 @@ export function MusicTagEditor() {
         const gameMap = new Map<string,string>();
         for (const r of (out||[])) {
             if (r.target_type === 'anime') animeSet.add(r.target_id);
-            else if (r.target_type === 'game') gameMap.set(r.target_id, r.target_id);
+            else if (r.target_type === 'game') {
+                const g = gameList.find(gl => gl.id === r.target_id);
+                gameMap.set(r.target_id, g?.title || r.target_id);
+            }
         }
         for (const r of (inv||[])) {
-            // reverse: source links to this music
-            if (r.source_type === 'game') {
+            if (r.source_type === 'anime') animeSet.add(r.source_id);
+            else if (r.source_type === 'game') {
                 const g = gameList.find(gl => gl.id === r.source_id);
                 gameMap.set(r.source_id, g?.title || r.source_id);
             }

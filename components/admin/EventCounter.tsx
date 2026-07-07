@@ -32,6 +32,7 @@ export function EventCounter() {
   const [songList, setSongList] = useState<{id:string;title:string;artist:string[]}[]>([]);
   const [selectedRefs, setSelectedRefs] = useState<{id:string;title:string}[]>([]);
   const [showSongPicker, setShowSongPicker] = useState<string | null>(null); // group id when picking
+  const [editLogId, setEditLogId] = useState<string | null>(null); // log id when editing existing
 
   useEffect(() => {
     fetchGroups();
@@ -110,6 +111,26 @@ export function EventCounter() {
       } else {
         setMessage({ text: '✅ 已记录', type: 'ok' });
         setSelectedRefs([]);
+        fetchAllLogs();
+      }
+    } catch (e: any) {
+      setMessage({ text: `❌ ${e.message}`, type: 'err' });
+    }
+    setLoading(false);
+  };
+
+  // ─── 更新已有事件 ───
+  const updateLogRefs = async (logId: string, refs: {id:string;title:string}[], groupId: string) => {
+    setLoading(true);
+    try {
+      const { error } = await supabase.from('event_logs').update({ refs: refs.length > 0 ? refs : null }).eq('id', logId);
+      if (error) {
+        setMessage({ text: `❌ 更新失败: ${error.message}`, type: 'err' });
+      } else {
+        setMessage({ text: '✅ 已更新', type: 'ok' });
+        setSelectedRefs([]);
+        setEditLogId(null);
+        setShowSongPicker(null);
         fetchAllLogs();
       }
     } catch (e: any) {
@@ -251,8 +272,11 @@ export function EventCounter() {
       {showSongPicker && (
         <div style={{ ...styles.section, background: '#0a0a18', border: '1px solid #2a2a40' }}>
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
-            <span style={{ fontSize:13, fontWeight:600, color:'#e4e4e7' }}>🎵 选择歌曲（可选）</span>
-            <button onClick={() => setShowSongPicker(null)} style={{...styles.cancelBtn, padding:'4px 12px'}}>✕</button>
+            <span style={{ fontSize:13, fontWeight:600, color:'#e4e4e7' }}>
+              {editLogId ? '✏️ 编辑歌曲' : '🎵 选择歌曲（可选）'}
+            </span>
+            <button onClick={() => { setShowSongPicker(null); setEditLogId(null); setSelectedRefs([]); }}
+              style={{...styles.cancelBtn, padding:'4px 12px'}}>✕</button>
           </div>
           {selectedRefs.map(s => (
             <span key={s.id} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',margin:'0 4px 4px 0',
@@ -266,13 +290,21 @@ export function EventCounter() {
             <input value={songSearch} onChange={e => setSongSearch(e.target.value)} placeholder="搜索歌曲..."
               style={styles.input} />
             <button onClick={() => {
-              logEvent(showSongPicker, selectedRefs);
-              setShowSongPicker(null);
-            }} style={{...styles.saveBtn, width:80}}>记录{selectedRefs.length>0?`(${selectedRefs.length})`:''}</button>
-            <button onClick={() => {
-              logEvent(showSongPicker);
-              setShowSongPicker(null);
-            }} style={{...styles.saveBtn, background:'#52525b', width:60}}>跳过</button>
+              if (editLogId) {
+                updateLogRefs(editLogId, selectedRefs, showSongPicker);
+              } else {
+                logEvent(showSongPicker, selectedRefs);
+                setShowSongPicker(null);
+              }
+            }} style={{...styles.saveBtn, width: editLogId ? 'auto' : 80, padding: editLogId ? '6px 14px' : undefined}}>
+              {editLogId ? `保存(${selectedRefs.length})` : `记录${selectedRefs.length>0?`(${selectedRefs.length})`:''}`}
+            </button>
+            {!editLogId && (
+              <button onClick={() => {
+                logEvent(showSongPicker);
+                setShowSongPicker(null);
+              }} style={{...styles.saveBtn, background:'#52525b', width:60}}>跳过</button>
+            )}
           </div>
           {songSearch && (
             <div style={{maxHeight:200,overflow:'auto',marginTop:8}}>
@@ -350,18 +382,29 @@ export function EventCounter() {
           {pagedLogs.map(l => {
             const g = groups.find(gg => gg.id === l.group_id);
             const songs = l.refs || [];
+            const isKaraoke = g && (g.name === '唱k' || g.name === '户外唱歌');
             return (
-              <div key={l.id} style={styles.logRow} onClick={() => deleteLog(l.id!)}>
+              <div key={l.id} style={styles.logRow}>
                 <span style={{ color: g?.color || '#818cf8', fontSize: 18, minWidth: 30 }}>{g?.icon}</span>
                 <span style={{ color: '#e4e4e7', fontSize: 14, fontWeight: 500, minWidth: 80 }}>{g?.name}</span>
                 <span style={{ color: '#a1a1aa', fontSize: 12, fontFamily: 'monospace', minWidth: 120 }}>
                   {l.event_at ? new Date(l.event_at).toLocaleDateString('zh-CN') + ' ' +
                     new Date(l.event_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : ''}
                 </span>
-                {songs.length > 0 && <span style={{ color: '#818cf8', fontSize: 11, flex: 1 }}>
-                  {songs.map(s => s.title).join(' / ')}
-                </span>}
-                <span style={{ color: '#f87171', fontSize: 11, cursor: 'pointer', marginLeft: 'auto' }}>点此删除</span>
+                {songs.length > 0 ? (
+                  <span style={{ color: '#818cf8', fontSize: 11, flex: 1 }}>
+                    {songs.map(s => s.title).join(' / ')}
+                  </span>
+                ) : isKaraoke ? (
+                  <span style={{ color: '#52525b', fontSize: 11, flex: 1 }}>未记录歌曲</span>
+                ) : null}
+                {isKaraoke && (
+                  <button onClick={(ev) => { ev.stopPropagation(); setEditLogId(l.id!); setShowSongPicker(l.group_id); setSelectedRefs(songs); setSongSearch(''); }}
+                    style={{ background:'rgba(99,102,241,0.15)', border:'none', color:'#818cf8', fontSize: 11, cursor:'pointer', padding:'2px 8px', borderRadius: 4 }}>
+                    ✏️ 编辑歌曲
+                  </button>
+                )}
+                <span onClick={() => deleteLog(l.id!)} style={{ color: '#f87171', fontSize: 11, cursor: 'pointer', marginLeft: 'auto' }}>点此删除</span>
               </div>
             );
           })}

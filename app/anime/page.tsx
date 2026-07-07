@@ -38,6 +38,7 @@ export default function AnimePage() {
   const [ratingFilter, setRatingFilter] = useState<string | null>(null);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState('rating');
+  const [sortDesc, setSortDesc] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [showAnalysis, setShowAnalysis] = useState(false);
@@ -140,6 +141,7 @@ export default function AnimePage() {
     }
     return 0;
   });
+  if (sortDesc) sorted.reverse();
 
   const filtered = sorted.filter(a => {
     if (statusFilter && a.status !== statusFilter) return false;
@@ -265,12 +267,17 @@ export default function AnimePage() {
               { value: 'status', label: '状态优先' },
               { value: 'title',  label: '标题 A→Z' },
               { value: 'tags',   label: '标签多→少' },
-            ].map(opt => (
-              <button key={opt.value} onClick={() => setSortBy(opt.value)}
+            ].map(opt => {
+              const active = sortBy === opt.value;
+              return (
+              <button key={opt.value} onClick={() => {
+                if (active) setSortDesc(!sortDesc);
+                else { setSortBy(opt.value); setSortDesc(false); }
+              }}
                 style={{ ...filterTabStyle, ...(sortBy === opt.value ? filterTabActiveStyle : {}) }}>
-                {opt.label}
+                {opt.label}{active ? (sortDesc ? ' ↓' : ' ↑') : ''}
               </button>
-            ))}
+              );})}
           </div>
         </div>
 
