@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState, useMemo } from 'react';
-import { useSearchParams } from 'next/navigation';
 import type { AnimeItem as AnimeItemType } from '@/lib/anime-data';
 import {
   C, pageStyle, cardGridStyle, cardStyle, cardBgStyle, cardOverlayStyle,
@@ -29,8 +28,12 @@ const RATING_COLORS: Record<string, string> = { '夯': '#a855f7', '顶级': '#4a
 export default function AnimePage() {
   const [animeList, setAnimeList] = useState<AnimeItemType[]>([]);
   const [coverMap, setCoverMap] = useState<Record<string, string>>({});
-  const searchParams = useSearchParams();
-  const [search, setSearch] = useState(() => searchParams.get('search') || '');
+  const [search, setSearch] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return new URLSearchParams(window.location.search).get('search') || '';
+    }
+    return '';
+  });
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [ratingFilter, setRatingFilter] = useState<string | null>(null);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
@@ -46,7 +49,7 @@ export default function AnimePage() {
   // Auto-open detail when arriving with search param
   useEffect(() => {
     if (!animeList.length) return;
-    const q = searchParams.get('search');
+    const q = new URLSearchParams(window.location.search).get('search');
     if (!q) return;
     const match = animeList.find(a => a.title.toLowerCase().includes(q.toLowerCase()));
     if (match) {

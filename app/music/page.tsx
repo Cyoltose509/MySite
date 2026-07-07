@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useMemo } from 'react';
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
+import { supabase } from '@/lib/supabase';
 import { supabase } from '@/lib/supabase';
 import AnalysisPanel from '@/components/music/AnalysisPanel';
 import type { MusicAnalysisItem } from '@/lib/music-analysis';
@@ -73,10 +73,10 @@ export default function MusicPage() {
   useEffect(() => { fetchMusic(); }, []);
 
   // Auto-open detail when arriving with search param
-  const searchParams = useSearchParams();
   useEffect(() => {
     if (!musicList.length) return;
-    const q = searchParams.get('search');
+    if (typeof window === 'undefined') return;
+    const q = new URLSearchParams(window.location.search).get('search');
     if (!q) return;
     const match = musicList.find(m => m.title.toLowerCase().includes(q.toLowerCase()));
     if (match) { setDetailMusic(match); setSearch(q); }
