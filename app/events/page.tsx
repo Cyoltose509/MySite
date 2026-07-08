@@ -24,8 +24,9 @@ export default function EventsPage() {
   const [visibleGroups, setVisibleGroups] = useState<Set<string>>(new Set());
   const [scale, setScale] = useState<TimeScale>('daily');
   const [animReady, setAnimReady] = useState(false);
+  const tooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const [tooltip, setTooltip] = useState<{ x: number; y: number; key: string; items: { name: string; icon: string; color: string; count: number }[] } | null>(null);
+  const [tooltip, setTooltip] = useState<{ x: number; y: number; key: string; items: { name: string; icon: string; color: string; count: number; songs?: {title:string}[] }[] } | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -203,18 +204,30 @@ export default function EventsPage() {
         <div ref={containerRef} style={{ position: 'relative' }}>
           {/* Tooltip */}
           {tooltip && (
-            <div style={{
+            <div
+              onMouseEnter={() => { if (tooltipTimer.current) clearTimeout(tooltipTimer.current); }}
+              onMouseLeave={() => setTooltip(null)}
+              style={{
               position: 'absolute', left: Math.min(tooltip.x + 12, (containerRef.current?.clientWidth || 900) - 160),
-              top: tooltip.y - 60, zIndex: 20,
+              top: Math.max(4, tooltip.y - 250), zIndex: 20,
               padding: '8px 12px', borderRadius: 10, background: '#1a1a30', border: '1px solid #2a2a45',
-              boxShadow: '0 4px 16px rgba(0,0,0,.6)', pointerEvents: 'none', minWidth: 120,
+              boxShadow: '0 4px 16px rgba(0,0,0,.6)', minWidth: 180, maxHeight: 260, overflowY: 'auto',
             }}>
               <div style={{ fontSize: 11, color: '#a1a1aa', marginBottom: 6 }}>{tooltip.key}</div>
               {tooltip.items.map((item, i) => (
-                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-                  <span style={{ width: 8, height: 8, borderRadius: 2, background: item.color, flexShrink: 0 }}/>
-                  <span style={{ fontSize: 12, color: '#e4e4e7' }}>{item.icon} {item.name}</span>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: item.color, marginLeft: 'auto' }}>{item.count}</span>
+                <div key={i}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: 2, background: item.color, flexShrink: 0 }}/>
+                    <span style={{ fontSize: 12, color: '#e4e4e7' }}>{item.icon} {item.name}</span>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: item.color, marginLeft: 'auto' }}>{item.count}</span>
+                  </div>
+                  {item.songs && item.songs.length > 0 && (
+                    <div style={{ marginLeft: 14, marginBottom: 4, padding: '4px 6px', background: 'rgba(255,255,255,0.03)', borderRadius: 4, maxHeight: 120, overflowY: 'auto' }}>
+                      {item.songs.map((s, si) => (
+                        <div key={si} style={{ fontSize: 10, color: '#818cf8', padding: '1px 0' }}>🎵 {s.title}</div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -258,12 +271,43 @@ export default function EventsPage() {
                       width={barW} height={Math.max(1, (b.total / maxCount) * plotH)}
                       fill="transparent" style={{ cursor: 'pointer' }}
                       onMouseEnter={(e) => {
+                        if (tooltipTimer.current) clearTimeout(tooltipTimer.current);
                         const ct = containerRef.current;
                         if (!ct) return;
-                        const items = segments.map(s => ({ name: s.g.name, icon: s.g.icon, color: s.g.color, count: s.cnt }));
-                        setTooltip({ x: e.clientX - ct.getBoundingClientRect().left, y: PAD_T + 10, key: range, items });
+                        // Compute bucket time span
+                        const keyTs = parseInt(b.key, 10);
+                        const d = new Date(keyTs);
+                        let tE: number;
+                        switch (scale) {
+                          case 'hourly': tE = keyTs + 3600000; break;
+                          case 'daily': tE = keyTs + 86400000; break;
+                          case 'weekly': tE = keyTs + 7 * 86400000; break;
+                          case 'monthly': { const nd = new Date(d); nd.setMonth(nd.getMonth() + 1); tE = nd.getTime(); } break;
+                          case 'yearly': { const nd = new Date(d); nd.setFullYear(nd.getFullYear() + 1); tE = nd.getTime(); } break;
+                          default: tE = keyTs + 86400000;
+                        }
+                        const items = segments.map(s => {
+                          const isKaraoke = s.g.name === '唱k' || s.g.name === '户外唱歌';
+                          let songs: {title:string}[] | undefined;
+                          if (isKaraoke) {
+                            const bucketEvents = rawEvents.filter(ev => {
+                              if (ev.group_id !== s.g.id) return false;
+                              const ts = new Date(ev.event_at).getTime();
+                              return ts >= keyTs && ts < tE;
+                            });
+                            const songSet = new Set<string>();
+                            for (const ev of bucketEvents) {
+                              if (ev.refs) for (const sr of ev.refs) songSet.add(sr.title);
+                            }
+                            if (songSet.size > 0) songs = [...songSet].map(t => ({title: t}));
+                          }
+                          return { name: s.g.name, icon: s.g.icon, color: s.g.color, count: s.cnt, songs };
+                        });
+                        const barTop = PAD_T + plotH - (b.total / maxCount) * plotH;
+                        const tooltipY = barTop - 10; // just above the bar
+                        setTooltip({ x: e.clientX - ct.getBoundingClientRect().left, y: tooltipY, key: range, items });
                       }}
-                      onMouseLeave={() => setTooltip(null)}
+                      onMouseLeave={() => { tooltipTimer.current = setTimeout(() => setTooltip(null), 200); }}
                     />
 
                     {/* 堆叠柱体 */}
@@ -294,36 +338,6 @@ export default function EventsPage() {
           </div>
         </div>
       )}
-
-      {/* 唱歌记录 */}
-      {(() => {
-        const karaokeEvents = rawEvents.filter(e => {
-          const g = groups.find(gg => gg.id === e.group_id);
-          return g && (g.name === '唱k' || g.name === '户外唱歌');
-        }).sort((a,b) => new Date(b.event_at).getTime() - new Date(a.event_at).getTime()).slice(0, 30);
-        if (karaokeEvents.length === 0) return null;
-        return (
-          <div style={{ margin: '24px 0' }}>
-            <h3 style={{ fontSize: 15, fontWeight: 600, color: '#e4e4e7', margin: '0 0 12px' }}>🎤 最近唱歌</h3>
-            <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
-              {karaokeEvents.map(e => {
-                const g = groups.find(gg => gg.id === e.group_id);
-                const songs = e.refs || [];
-                return (
-                  <div key={e.id} style={{ display:'flex',alignItems:'center',gap:8,padding:'6px 10px',borderRadius:8,background:'#121224' }}>
-                    <span style={{fontSize:16}}>{g?.icon}</span>
-                    <span style={{fontSize:12,color:'#a1a1aa',minWidth:60}}>{g?.name}</span>
-                    <span style={{fontSize:11,color:'#52525b',minWidth:80}}>{new Date(e.event_at).toLocaleDateString('zh-CN')}</span>
-                    <span style={{fontSize:11,color:'#e4e4e7',flex:1}}>
-                      {songs.length > 0 ? songs.map(s => s.title).join(' / ') : '不记得'}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        );
-      })()}
 
       {/* 底部统计 */}
       {groups.length > 0 && (

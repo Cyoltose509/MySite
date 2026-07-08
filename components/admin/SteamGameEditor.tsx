@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { getSession } from '@/lib/auth';
 import { getAnimeList } from '@/lib/anime-data';
+import { getQuickSearchIndex } from '@/lib/search';
 import { TagInput } from '@/components/admin/TagInput';
 import {
   C, cardGridStyle, cardStyle, cardContentStyle,
@@ -418,7 +419,10 @@ export function SteamGameEditor() {
               <div style={{display:'flex',gap:4,marginTop:4}}>
                 <input value={refAnimeSearch} onChange={e => setRefAnimeSearch(e.target.value)} placeholder="搜索番剧..."
                   style={{padding:'4px 8px',borderRadius:6,border:'1px solid #27273d',background:'#121224',color:C.text,fontSize:11,width:120}} />
-                {refAnimeSearch && animeList.filter(a => a.includes(refAnimeSearch) && !refsAnime.includes(a)).slice(0,5).map(a => (
+                {refAnimeSearch && animeList.filter(a => {
+                  if (refsAnime.includes(a)) return false;
+                  return getQuickSearchIndex(a).includes(refAnimeSearch.toLowerCase());
+                }).slice(0,5).map(a => (
                   <span key={a} onClick={async () => {
                     await supabase.from('entity_refs').insert({source_type:'game',source_id:selectedId,target_type:'anime',target_id:a});
                     setRefsAnime(prev => [...prev, a]); setRefAnimeSearch('');
@@ -445,7 +449,10 @@ export function SteamGameEditor() {
               <div style={{display:'flex',gap:4,marginTop:4}}>
                 <input value={refMusicSearch} onChange={e => setRefMusicSearch(e.target.value)} placeholder="搜索歌曲..."
                   style={{padding:'4px 8px',borderRadius:6,border:'1px solid #27273d',background:'#121224',color:C.text,fontSize:11,width:120}} />
-                {refMusicSearch && musicListRef.filter(m => m.title.toLowerCase().includes(refMusicSearch.toLowerCase()) && !refsMusic.find(r => r.id === m.id)).slice(0,5).map(m => (
+                {refMusicSearch && musicListRef.filter(m => {
+                  if (refsMusic.find(r => r.id === m.id)) return false;
+                  return getQuickSearchIndex(m.title).includes(refMusicSearch.toLowerCase());
+                }).slice(0,5).map(m => (
                   <span key={m.id} onClick={async () => {
                     await supabase.from('entity_refs').insert({source_type:'game',source_id:selectedId,target_type:'music',target_id:m.id});
                     setRefsMusic(prev => [...prev, m]); setRefMusicSearch('');

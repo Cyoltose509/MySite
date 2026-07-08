@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import { getSession } from '@/lib/auth';
+import { getQuickSearchIndex } from '@/lib/search';
 import type { EventGroup, EventLog } from '@/lib/types';
 
 const PAGE_SIZE = 30;
@@ -33,6 +34,7 @@ export function EventCounter() {
   const [selectedRefs, setSelectedRefs] = useState<{id:string;title:string}[]>([]);
   const [showSongPicker, setShowSongPicker] = useState<string | null>(null); // group id when picking
   const [editLogId, setEditLogId] = useState<string | null>(null); // log id when editing existing
+  const songInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetchGroups();
@@ -41,7 +43,7 @@ export function EventCounter() {
   }, []);
 
   const loadSongs = async () => {
-    const {data} = await supabase.from('music_list').select('id,title,artist').order('title').limit(500);
+    const {data} = await supabase.from('music_list').select('id,title,artist').order('created_at', { ascending: true });
     setSongList(data || []);
   };
 
@@ -287,7 +289,7 @@ export function EventCounter() {
             </span>
           ))}
           <div style={{display:'flex',gap:6,marginTop:6}}>
-            <input value={songSearch} onChange={e => setSongSearch(e.target.value)} placeholder="搜索歌曲..."
+            <input ref={songInputRef} value={songSearch} onChange={e => setSongSearch(e.target.value)} placeholder="搜索歌曲..."
               style={styles.input} />
             <button onClick={() => {
               if (editLogId) {
@@ -306,16 +308,19 @@ export function EventCounter() {
               }} style={{...styles.saveBtn, background:'#52525b', width:60}}>跳过</button>
             )}
           </div>
-          {songSearch && (
-            <div style={{maxHeight:200,overflow:'auto',marginTop:8}}>
-              {songList.filter(s => s.title.toLowerCase().includes(songSearch.toLowerCase()) && !selectedRefs.find(r => r.id === s.id)).slice(0,20).map(s => (
-                <div key={s.id} onClick={() => setSelectedRefs(prev => [...prev, {id:s.id,title:s.title}])}
+          <div style={{maxHeight:200,overflow:'auto',marginTop:8}}>
+            {songList.filter(s => {
+              if (!songSearch) return true;
+              const q = songSearch.toLowerCase();
+              const idx = getQuickSearchIndex(s.title) + ' ' + getQuickSearchIndex((s.artist || []).join(' '));
+              return idx.includes(q);
+            }).slice(0, songSearch ? 20 : undefined).map(s => (
+                <div key={s.id} onClick={() => { setSelectedRefs(prev => [...prev, {id:s.id,title:s.title}]); songInputRef.current?.focus(); }}
                   style={{padding:'5px 8px',cursor:'pointer',fontSize:12,color:'#a1a1aa',borderRadius:4,borderBottom:'1px solid rgba(255,255,255,0.04)'}}>
                   {s.title} — {(s.artist||[]).join('/')}
                 </div>
               ))}
             </div>
-          )}
         </div>
       )}
 

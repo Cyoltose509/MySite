@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import AnalysisPanel from '@/components/music/AnalysisPanel';
@@ -68,6 +68,10 @@ export default function MusicPage() {
   const [showAnalysis, setShowAnalysis] = useState(false);
   const [refsMap, setRefsMap] = useState<Record<string, {anime:string[];games:{id:string;title:string}[]}>>({});
   const [singCounts, setSingCounts] = useState<Record<string, number>>({});
+  const [singDetails, setSingDetails] = useState<Record<string, {date:string;groupName:string;groupId:string}[]>>({});
+  const [hoverSingCard, setHoverSingCard] = useState<string | null>(null);
+  const [hoverSingDetail, setHoverSingDetail] = useState(false);
+  const singHoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => { fetchMusic(); }, []);
 
@@ -145,20 +149,32 @@ export default function MusicPage() {
       setRefsMap(rm);
     }
 
-    // Load sing counts from event_logs (karaoke groups)
-    const { data: events } = await supabase.from('event_logs').select('refs')
+    // Load sing details from event_logs (karaoke groups)
+    const { data: events } = await supabase.from('event_logs').select('refs, event_at, group_id')
       .not('refs', 'is', null).neq('refs', '[]');
+    // Load event group names
+    const { data: evGroups } = await supabase.from('event_groups').select('id, name');
+    const groupMap: Record<string, string> = {};
+    if (evGroups) for (const g of evGroups) groupMap[g.id] = g.name;
+
+    const sc: Record<string, number> = {};
+    const sd: Record<string, {date:string;groupName:string;groupId:string}[]> = {};
     if (events) {
-      const sc: Record<string, number> = {};
       for (const e of events) {
         const refs = e.refs as any[];
         if (!refs) continue;
+        const d = new Date(e.event_at).toLocaleDateString('zh-CN');
+        const gn = groupMap[e.group_id] || '唱K';
         for (const r of refs) {
-          if (r.id) sc[r.id] = (sc[r.id] || 0) + 1;
+          if (!r.id) continue;
+          sc[r.id] = (sc[r.id] || 0) + 1;
+          if (!sd[r.id]) sd[r.id] = [];
+          sd[r.id].push({date: d, groupName: gn, groupId: e.group_id});
         }
       }
-      setSingCounts(sc);
     }
+    setSingCounts(sc);
+    setSingDetails(sd);
   };
 
   const allTags = useMemo(() => {
@@ -439,7 +455,36 @@ export default function MusicPage() {
                 <p style={cardTitleStyle(hasTags)}>{m.title}</p>
                 <p style={cardArtistStyle}>{(m.artist || []).join(' / ')}</p>
                 {m.duration && <span style={cardDurationStyle}>{fmtDur(m.duration)}</span>}
-                {singCounts[m.id] ? <span style={{fontSize:10,color:'#fbbf24'}}>🎤 {singCounts[m.id]}</span> : null}
+                {singCounts[m.id] ? (
+                  <span style={{fontSize:10,color:'#fbbf24',cursor:'pointer',alignSelf:'flex-start'}}
+                    onMouseEnter={() => { if (singHoverTimer.current) clearTimeout(singHoverTimer.current); setHoverSingCard(m.id); }}
+                    onMouseLeave={() => { singHoverTimer.current = setTimeout(() => setHoverSingCard(null), 200); }}>
+                    🎤 {singCounts[m.id]}
+                  </span>
+                ) : null}
+                {hoverSingCard === m.id && singDetails[m.id] && (
+                  <div style={{position:'fixed',left:0,top:0,zIndex:9999,pointerEvents:'none'}}
+                    onMouseEnter={() => { if (singHoverTimer.current) clearTimeout(singHoverTimer.current); }}
+                    onMouseLeave={() => setHoverSingCard(null)}
+                    ref={el => {
+                      if (!el) return;
+                      const parent = el.previousElementSibling;
+                      if (parent) {
+                        const r = parent.getBoundingClientRect();
+                        el.style.left = r.left + 'px';
+                        el.style.top = r.bottom + 'px';
+                      }
+                    }}>
+                    <div style={{pointerEvents:'auto',background:'#16162a',border:'1px solid #2a2a40',borderRadius:8,padding:'6px 8px',minWidth:160,maxHeight:200,overflow:'auto'}}>
+                      {singDetails[m.id].map((ev, i) => (
+                        <span key={i}
+                          style={{display:'block',fontSize:10,color:'#a1a1aa',padding:'2px 0',borderBottom:'1px solid rgba(255,255,255,0.04)'}}>
+                          {ev.date} · {ev.groupName}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <div style={{ display: 'flex', gap: 4 }}>
                   {hasTags && likability && (
                     <span style={badgeStyle(C.red)}>♥{RATING_LABELS[likability]}</span>
@@ -518,7 +563,32 @@ export default function MusicPage() {
                       </span>
                     </a>
                   ))}
-                  {sc ? <span style={{fontSize:11,color:'#fbbf24',padding:'3px 8px',borderRadius:6,background:'rgba(245,158,11,0.1)'}}>🎤 唱了 {sc} 次</span> : null}
+                  {sc ? (
+                    <span style={{fontSize:11,color:'#fbbf24',padding:'3px 8px',borderRadius:6,background:'rgba(245,158,11,0.1)',cursor:'pointer'}}
+                      onMouseEnter={() => { if (singHoverTimer.current) clearTimeout(singHoverTimer.current); setHoverSingDetail(true); }}
+                      onMouseLeave={() => { singHoverTimer.current = setTimeout(() => setHoverSingDetail(false), 200); }}>
+                      🎤 唱了 {sc} 次
+                    </span>
+                  ) : null}
+                  {hoverSingDetail && singDetails[detailMusic.id] && (
+                    <div style={{position:'fixed',left:0,top:0,zIndex:9999,pointerEvents:'none'}}
+                      onMouseEnter={() => { if (singHoverTimer.current) clearTimeout(singHoverTimer.current); }}
+                      onMouseLeave={() => setHoverSingDetail(false)}
+                      ref={el => {
+                        if (!el) return;
+                        const r = el.previousElementSibling?.getBoundingClientRect();
+                        if (r) { el.style.left = r.left + 'px'; el.style.top = (r.bottom + 4) + 'px'; }
+                      }}>
+                      <div style={{pointerEvents:'auto',background:'#16162a',border:'1px solid #2a2a40',borderRadius:8,padding:'6px 8px',minWidth:160,maxHeight:200,overflow:'auto'}}>
+                        {singDetails[detailMusic.id].map((ev, i) => (
+                          <span key={i}
+                            style={{display:'block',fontSize:10,color:'#a1a1aa',padding:'2px 0',borderBottom:'1px solid rgba(255,255,255,0.04)'}}>
+                            {ev.date} · {ev.groupName}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })()}
