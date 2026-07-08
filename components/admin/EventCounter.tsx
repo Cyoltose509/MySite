@@ -28,19 +28,29 @@ export function EventCounter() {
     const now = new Date();
     return `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
   });
-  // song refs for karaoke
+  // song refs for karaoke  
   const [songSearch, setSongSearch] = useState('');
   const [songList, setSongList] = useState<{id:string;title:string;artist:string[]}[]>([]);
   const [selectedRefs, setSelectedRefs] = useState<{id:string;title:string}[]>([]);
   const [showSongPicker, setShowSongPicker] = useState<string | null>(null); // group id when picking
   const [editLogId, setEditLogId] = useState<string | null>(null); // log id when editing existing
   const songInputRef = useRef<HTMLInputElement>(null);
+  // meal refs for meals
+  const [mealList, setMealList] = useState<{id:string;title:string}[]>([]);
+  const [mealSearch, setMealSearch] = useState('');
+  const [mealAmount, setMealAmount] = useState('');
 
   useEffect(() => {
     fetchGroups();
     fetchAllLogs();
     loadSongs();
+    loadMeals();
   }, []);
+
+  const loadMeals = async () => {
+    const {data} = await supabase.from('meals').select('id,title').order('title', { ascending: true });
+    setMealList(data || []);
+  };
 
   const loadSongs = async () => {
     const {data} = await supabase.from('music_list').select('id,title,artist').order('created_at', { ascending: true });
@@ -99,7 +109,12 @@ export function EventCounter() {
     setLoading(true);
     try {
       const eventAt = new Date(`${recordDate}T${recordTime}:00`).toISOString();
-      const p_refs = refs || [];
+      let p_refs = refs || [];
+      // Attach meal amount to refs
+      if (mealAmount && p_refs.length > 0) {
+        const amt = parseFloat(mealAmount);
+        if (!isNaN(amt)) p_refs = p_refs.map(r => ({...r, amount: amt}));
+      }
       const { data, error } = await supabase.rpc('fn_log_event', {
         p_hash: getSession() || '',
         p_group_id: groupId,
@@ -113,6 +128,7 @@ export function EventCounter() {
       } else {
         setMessage({ text: '✅ 已记录', type: 'ok' });
         setSelectedRefs([]);
+        setMealAmount('');
         fetchAllLogs();
       }
     } catch (e: any) {
@@ -125,7 +141,12 @@ export function EventCounter() {
   const updateLogRefs = async (logId: string, refs: {id:string;title:string}[], groupId: string) => {
     setLoading(true);
     try {
-      const { error } = await supabase.from('event_logs').update({ refs: refs.length > 0 ? refs : null }).eq('id', logId);
+      let p_refs = refs || [];
+      if (mealAmount && p_refs.length > 0) {
+        const amt = parseFloat(mealAmount);
+        if (!isNaN(amt)) p_refs = p_refs.map(r => ({...r, amount: amt}));
+      }
+      const { error } = await supabase.from('event_logs').update({ refs: p_refs.length > 0 ? p_refs : null }).eq('id', logId);
       if (error) {
         setMessage({ text: `❌ 更新失败: ${error.message}`, type: 'err' });
       } else {
@@ -252,9 +273,11 @@ export function EventCounter() {
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           {groups.map(g => {
             const isKaraoke = g.name === '唱k' || g.name === '户外唱歌';
+            const isMeal = g.name === '大餐';
+            const needsPicker = isKaraoke || isMeal;
             return (
             <button key={g.id} onClick={() => {
-              if (isKaraoke) { setShowSongPicker(g.id!); setSelectedRefs([]); setSongSearch(''); }
+              if (needsPicker) { setShowSongPicker(g.id!); setSelectedRefs([]); setSongSearch(''); setMealSearch(''); }
               else logEvent(g.id!);
             }} disabled={loading} style={{
               ...styles.recordBtn,
@@ -270,12 +293,21 @@ export function EventCounter() {
         </div>
       </div>
 
-      {/* Song picker modal for karaoke */}
-      {showSongPicker && (
+      {/* Picker modal for karaoke / meals */}
+      {showSongPicker && (() => {
+        const pickerGroup = groups.find(g => g.id === showSongPicker);
+        const isMeal = pickerGroup?.name === '大餐';
+        const list = isMeal ? mealList : songList;
+        const search = isMeal ? mealSearch : songSearch;
+        const setSearch = isMeal ? setMealSearch : setSongSearch;
+        const searchPlaceholder = isMeal ? '搜索大餐...' : '搜索歌曲...';
+        const icon = isMeal ? '🍽️' : '🎵';
+        const label = isMeal ? '选择大餐' : '选择歌曲';
+        return (
         <div style={{ ...styles.section, background: '#0a0a18', border: '1px solid #2a2a40' }}>
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
             <span style={{ fontSize:13, fontWeight:600, color:'#e4e4e7' }}>
-              {editLogId ? '✏️ 编辑歌曲' : '🎵 选择歌曲（可选）'}
+              {editLogId ? `✏️ 编辑${isMeal?'大餐':'歌曲'}` : `${icon} ${label}（可选）`}
             </span>
             <button onClick={() => { setShowSongPicker(null); setEditLogId(null); setSelectedRefs([]); }}
               style={{...styles.cancelBtn, padding:'4px 12px'}}>✕</button>
@@ -283,13 +315,20 @@ export function EventCounter() {
           {selectedRefs.map(s => (
             <span key={s.id} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',margin:'0 4px 4px 0',
               borderRadius:6,background:'rgba(99,102,241,0.15)',color:'#818cf8',fontSize:11}}>
-              {s.title}
+              {s.title} {(s as any).amount ? `¥${(s as any).amount}` : ''}
               <button onClick={() => setSelectedRefs(prev => prev.filter(x => x.id !== s.id))}
                 style={{background:'none',border:'none',color:'#818cf8',cursor:'pointer',padding:0,fontSize:10}}>✕</button>
             </span>
           ))}
+          {isMeal && selectedRefs.length > 0 && (
+            <div style={{display:'flex',gap:6,alignItems:'center',marginTop:4}}>
+              <span style={{fontSize:11,color:'#a1a1aa'}}>消费金额</span>
+              <input value={mealAmount} onChange={e => setMealAmount(e.target.value)} placeholder="元" type="number"
+                style={{...styles.input, width:80}} />
+            </div>
+          )}
           <div style={{display:'flex',gap:6,marginTop:6}}>
-            <input ref={songInputRef} value={songSearch} onChange={e => setSongSearch(e.target.value)} placeholder="搜索歌曲..."
+            <input ref={songInputRef} value={search} onChange={e => setSearch(e.target.value)} placeholder={searchPlaceholder}
               style={styles.input} />
             <button onClick={() => {
               if (editLogId) {
@@ -309,12 +348,12 @@ export function EventCounter() {
             )}
           </div>
           <div style={{maxHeight:200,overflow:'auto',marginTop:8}}>
-            {songList.filter(s => {
-              if (!songSearch) return true;
-              const q = songSearch.toLowerCase();
-              const idx = getQuickSearchIndex(s.title) + ' ' + getQuickSearchIndex((s.artist || []).join(' '));
+            {list.filter(s => {
+              if (!search) return true;
+              const q = search.toLowerCase();
+              const idx = getQuickSearchIndex(s.title) + (isMeal ? '' : ' ' + getQuickSearchIndex((s as any).artist || [].join(' ')));
               return idx.includes(q);
-            }).slice(0, songSearch ? 20 : undefined).map(s => (
+            }).slice(0, search ? 20 : undefined).map(s => (
                 <div key={s.id} onClick={() => { setSelectedRefs(prev => [...prev, {id:s.id,title:s.title}]); songInputRef.current?.focus(); }}
                   style={{padding:'5px 8px',cursor:'pointer',fontSize:12,color:'#a1a1aa',borderRadius:4,borderBottom:'1px solid rgba(255,255,255,0.04)'}}>
                   {s.title} — {(s.artist||[]).join('/')}
@@ -322,7 +361,8 @@ export function EventCounter() {
               ))}
             </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* 事件组管理 */}
       <div style={styles.section}>
@@ -386,8 +426,10 @@ export function EventCounter() {
           )}
           {pagedLogs.map(l => {
             const g = groups.find(gg => gg.id === l.group_id);
-            const songs = l.refs || [];
+            const refs = l.refs || [];
             const isKaraoke = g && (g.name === '唱k' || g.name === '户外唱歌');
+            const isMeal = g?.name === '大餐';
+            const needsEdit = isKaraoke || isMeal;
             return (
               <div key={l.id} style={styles.logRow}>
                 <span style={{ color: g?.color || '#818cf8', fontSize: 18, minWidth: 30 }}>{g?.icon}</span>
@@ -396,17 +438,17 @@ export function EventCounter() {
                   {l.event_at ? new Date(l.event_at).toLocaleDateString('zh-CN') + ' ' +
                     new Date(l.event_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : ''}
                 </span>
-                {songs.length > 0 ? (
+                {refs.length > 0 ? (
                   <span style={{ color: '#818cf8', fontSize: 11, flex: 1 }}>
-                    {songs.map(s => s.title).join(' / ')}
+                    {refs.map((s:any) => s.title + (s.amount ? ` ¥${s.amount}` : '')).join(' / ')}
                   </span>
-                ) : isKaraoke ? (
-                  <span style={{ color: '#52525b', fontSize: 11, flex: 1 }}>未记录歌曲</span>
+                ) : needsEdit ? (
+                  <span style={{ color: '#52525b', fontSize: 11, flex: 1 }}>{isMeal ? '未记录大餐' : '未记录歌曲'}</span>
                 ) : null}
-                {isKaraoke && (
-                  <button onClick={(ev) => { ev.stopPropagation(); setEditLogId(l.id!); setShowSongPicker(l.group_id); setSelectedRefs(songs); setSongSearch(''); }}
+                {needsEdit && (
+                  <button onClick={(ev) => { ev.stopPropagation(); setEditLogId(l.id!); setShowSongPicker(l.group_id); setSelectedRefs(refs); setSongSearch(''); setMealSearch(''); }}
                     style={{ background:'rgba(99,102,241,0.15)', border:'none', color:'#818cf8', fontSize: 11, cursor:'pointer', padding:'2px 8px', borderRadius: 4 }}>
-                    ✏️ 编辑歌曲
+                    ✏️ 编辑{isMeal ? '大餐' : '歌曲'}
                   </button>
                 )}
                 <span onClick={() => deleteLog(l.id!)} style={{ color: '#f87171', fontSize: 11, cursor: 'pointer', marginLeft: 'auto' }}>点此删除</span>

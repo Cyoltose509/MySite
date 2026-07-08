@@ -36,6 +36,7 @@ export default function DashboardPage() {
   const [animeCount, setAnimeCount] = useState(0);
   const [musicCount, setMusicCount] = useState(0);
   const [gameCount, setGameCount] = useState(0);
+  const [mealCount, setMealCount] = useState(0);
   const [sleepAvg, setSleepAvg] = useState('--');
   const [loading, setLoading] = useState(true);
 
@@ -120,6 +121,8 @@ export default function DashboardPage() {
     setAnimeCount(ac || 0);
     setMusicCount(mc || 0);
     setGameCount(gc || 0);
+    const {count: mealc} = await supabase.from('meals').select('*', {count: 'exact', head: true});
+    setMealCount(mealc || 0);
     setSleepAvg(avgHours);
     setLoading(false);
   };
@@ -194,6 +197,19 @@ export default function DashboardPage() {
               <div style={{ fontSize: 28, marginBottom: 8 }}>🎮</div>
               <div style={{ fontSize: 24, fontWeight: 800, color: C.text, marginBottom: 4 }}>{gameCount}</div>
               <div style={{ fontSize: 12, color: C.textSec, marginBottom: 8 }}>款游戏</div>
+              <div style={{ fontSize: 11, color: C.accent }}>查看详情 →</div>
+            </div>
+          </Link>
+
+          {/* 大餐统计卡片 */}
+          <Link href="/meals" style={{ textDecoration: 'none' }}>
+            <div style={{
+              padding: 16, borderRadius: 14, background: C.surface, border: '1px solid ' + C.border,
+              textAlign: 'center', transition: 'all 0.2s', cursor: 'pointer',
+            }}>
+              <div style={{ fontSize: 28, marginBottom: 8 }}>🍽️</div>
+              <div style={{ fontSize: 24, fontWeight: 800, color: C.text, marginBottom: 4 }}>{mealCount}</div>
+              <div style={{ fontSize: 12, color: C.textSec, marginBottom: 8 }}>种美食</div>
               <div style={{ fontSize: 11, color: C.accent }}>查看详情 →</div>
             </div>
           </Link>

@@ -10,12 +10,15 @@ import { SteamGameEditor } from '@/components/admin/SteamGameEditor';
 import { MoodLogger } from '@/components/admin/MoodLogger';
 import { EventCounter } from '@/components/admin/EventCounter';
 
-type TabId = 'sync' | 'music' | 'games' | 'mood' | 'events';
+import { MealEditor } from '@/components/admin/MealEditor';
+
+type TabId = 'sync' | 'music' | 'games' | 'meals' | 'mood' | 'events';
 
 const TABS: { id: TabId; label: string; icon: string }[] = [
   { id: 'sync', label: '数据同步', icon: '🔄' },
   { id: 'music', label: '音乐标签', icon: '🎵' },
   { id: 'games', label: '游戏标签', icon: '🎮' },
+  { id: 'meals', label: '大餐标签', icon: '🍽️' },
   { id: 'mood', label: '心情记录', icon: '🧠' },
   { id: 'events', label: '事件计数', icon: '📅' },
 ];
@@ -89,6 +92,7 @@ export default function AdminPage() {
         {activeTab === 'sync' && <SyncPanel />}
         {activeTab === 'music' && <MusicTagEditor />}
         {activeTab === 'games' && <SteamGameEditor />}
+        {activeTab === 'meals' && <MealEditor />}
         {activeTab === 'mood' && <MoodLogger />}
         {activeTab === 'events' && <EventCounter />}
       </main>

@@ -26,7 +26,7 @@ export default function EventsPage() {
   const [animReady, setAnimReady] = useState(false);
   const tooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const [tooltip, setTooltip] = useState<{ x: number; y: number; key: string; items: { name: string; icon: string; color: string; count: number; songs?: {title:string}[] }[] } | null>(null);
+  const [tooltip, setTooltip] = useState<{ x: number; y: number; key: string; items: { name: string; icon: string; color: string; count: number; songs?: {title:string;amount?:number}[] }[] } | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -224,7 +224,8 @@ export default function EventsPage() {
                   {item.songs && item.songs.length > 0 && (
                     <div style={{ marginLeft: 14, marginBottom: 4, padding: '4px 6px', background: 'rgba(255,255,255,0.03)', borderRadius: 4, maxHeight: 120, overflowY: 'auto' }}>
                       {item.songs.map((s, si) => (
-                        <div key={si} style={{ fontSize: 10, color: '#818cf8', padding: '1px 0' }}>🎵 {s.title}</div>
+                        <div key={si} style={{ fontSize: 10, color: '#818cf8', padding: '1px 0' }}>
+                          {item.name === '大餐' ? '🍽️' : '🎵'} {s.title}{s.amount ? ` ¥${s.amount}` : ''}</div>
                       ))}
                     </div>
                   )}
@@ -287,19 +288,21 @@ export default function EventsPage() {
                           default: tE = keyTs + 86400000;
                         }
                         const items = segments.map(s => {
-                          const isKaraoke = s.g.name === '唱k' || s.g.name === '户外唱歌';
+                          const isRefGroup = s.g.name === '唱k' || s.g.name === '户外唱歌' || s.g.name === '大餐';
                           let songs: {title:string}[] | undefined;
-                          if (isKaraoke) {
+                          if (isRefGroup) {
                             const bucketEvents = rawEvents.filter(ev => {
                               if (ev.group_id !== s.g.id) return false;
                               const ts = new Date(ev.event_at).getTime();
                               return ts >= keyTs && ts < tE;
                             });
-                            const songSet = new Set<string>();
+                            const songSet = new Map<string, {title:string;amount?:number}>();
                             for (const ev of bucketEvents) {
-                              if (ev.refs) for (const sr of ev.refs) songSet.add(sr.title);
+                              if (ev.refs) for (const sr of ev.refs) {
+                                if (!songSet.has(sr.title)) songSet.set(sr.title, {title:sr.title, amount:sr.amount});
+                              }
                             }
-                            if (songSet.size > 0) songs = [...songSet].map(t => ({title: t}));
+                            if (songSet.size > 0) songs = [...songSet.values()];
                           }
                           return { name: s.g.name, icon: s.g.icon, color: s.g.color, count: s.cnt, songs };
                         });
