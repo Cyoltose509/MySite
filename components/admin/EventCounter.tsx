@@ -356,7 +356,7 @@ export function EventCounter() {
             }).slice(0, search ? 20 : undefined).map(s => (
                 <div key={s.id} onClick={() => { setSelectedRefs(prev => [...prev, {id:s.id,title:s.title}]); songInputRef.current?.focus(); }}
                   style={{padding:'5px 8px',cursor:'pointer',fontSize:12,color:'#a1a1aa',borderRadius:4,borderBottom:'1px solid rgba(255,255,255,0.04)'}}>
-                  {s.title} — {(s.artist||[]).join('/')}
+                  {s.title}{isMeal ? '' : ` — ${((s as any).artist||[]).join('/')}`}
                 </div>
               ))}
             </div>
