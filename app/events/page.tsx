@@ -298,7 +298,7 @@ export default function EventsPage() {
                             });
                             const songSet = new Map<string, {title:string;amount?:number}>();
                             for (const ev of bucketEvents) {
-                              if (ev.refs) for (const sr of ev.refs) {
+                              if (ev.refs) for (const sr of ev.refs as any[]) {
                                 if (!songSet.has(sr.title)) songSet.set(sr.title, {title:sr.title, amount:sr.amount});
                               }
                             }
