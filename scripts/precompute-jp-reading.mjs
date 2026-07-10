@@ -14,6 +14,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Load DB URL from .env.local
 const envPath = resolve(__dirname, '..', '.env.local');
+if (!existsSync(envPath)) {
+  console.log('⚠ .env.local not found, skipping precompute');
+  process.exit(0);
+}
 const envContent = readFileSync(envPath, 'utf-8');
 const dbUrl = envContent.match(/DATABASE_URL=(.+)/)?.[1]?.trim();
 if (!dbUrl) { console.error('DATABASE_URL not found'); process.exit(1); }
