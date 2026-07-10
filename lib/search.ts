@@ -2,7 +2,6 @@
  * Search utility — normalizes text for pinyin / romaji / hangul / fuzzy search.
  */
 import { pinyin } from 'pinyin-pro';
-
 // Simple kana → romaji mapping (hiragana + katakana)
 const KANA_MAP: Record<string, string> = {
   'あ':'a','い':'i','う':'u','え':'e','お':'o',
@@ -112,8 +111,10 @@ export async function getSearchIndex(text: string): Promise<string> {
  * Use for quick filtering where async is impractical.
  */
 export function getQuickSearchIndex(text: string): string {
+  if (!text || typeof text !== 'string') return '';
   const pyArr = (() => { try { return pinyin(text, { toneType: 'none', type: 'array' }) || []; } catch { return []; } })();
   const pyFull = pyArr.join('');
   const pyInit = pyArr.map(w => w[0] || '').join(''); // first letter of each pinyin syllable
   return `${text.toLowerCase()} ${pyFull.toLowerCase()} ${pyInit.toLowerCase()} ${toRomaji(text)} ${hangulToRoman(text).toLowerCase()}`;
 }
+

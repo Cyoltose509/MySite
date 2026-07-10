@@ -42,11 +42,11 @@ interface MusicTagData {
 const RATING_LABELS = ['', '拉完了', 'NPC', '人上人', '顶级', '夯'];
 
 const SORT_OPTIONS = [
-  { value: 'title',       label: '歌名 A→Z' },
+  { value: 'title',       label: '歌名' },
   { value: 'artist',      label: '歌手' },
   { value: 'likability',  label: '♥ 喜欢度' },
   { value: 'singability', label: '🎤 能唱度' },
-  { value: 'created',     label: '收藏时间' },
+  { value: 'singCount',   label: '🎵 唱的次数' },
 ] as const;
 
 type SortBy = typeof SORT_OPTIONS[number]['value'];
@@ -57,6 +57,7 @@ export default function MusicPage() {
   const [coverMap, setCoverMap] = useState<Record<string, string>>({});
   const [search, setSearch] = useState('');
   const [sortBy, setSortBy] = useState<SortBy>('title');
+  const [sortDesc, setSortDesc] = useState(false);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [voiceFilter, setVoiceFilter] = useState<string | null>(null);
   const [likabilityFilter, setLikabilityFilter] = useState<number | null>(null);
@@ -206,27 +207,27 @@ export default function MusicPage() {
     const bHasTags = (tagsMap[b.id]?.length || 0) > 0;
     if (aHasTags !== bHasTags) return aHasTags ? -1 : 1;
 
+    let cmp = 0;
     if (sortBy === 'likability') {
       const aL = tagsMap[a.id]?.[0]?.likability || 0;
       const bL = tagsMap[b.id]?.[0]?.likability || 0;
-      return bL - aL;
-    }
-    if (sortBy === 'singability') {
+      cmp = bL - aL;
+    } else if (sortBy === 'singability') {
       const aS = tagsMap[a.id]?.[0]?.singability || 0;
       const bS = tagsMap[b.id]?.[0]?.singability || 0;
-      return bS - aS;
-    }
-    if (sortBy === 'created') {
-      const aT = a.created_at || '';
-      const bT = b.created_at || '';
-      return bT.localeCompare(aT);
-    }
-    if (sortBy === 'artist') {
+      cmp = bS - aS;
+    } else if (sortBy === 'singCount') {
+      const aC = singCounts[a.id] || 0;
+      const bC = singCounts[b.id] || 0;
+      cmp = bC - aC;
+    } else if (sortBy === 'artist') {
       const aArt = (a.artist || []).join(' / ');
       const bArt = (b.artist || []).join(' / ');
-      return aArt.localeCompare(bArt);
+      cmp = aArt.localeCompare(bArt);
+    } else {
+      cmp = a.title.localeCompare(b.title);
     }
-    return a.title.localeCompare(b.title);
+    return sortDesc ? -cmp : cmp;
   });
 
   const byTag = tagFilter
@@ -329,12 +330,15 @@ export default function MusicPage() {
         <div style={filterRowStyle}>
           <span style={filterLabelStyle}>排序</span>
           <div style={filterTabsStyle}>
-            {SORT_OPTIONS.map((opt) => (
-              <button key={opt.value} onClick={() => setSortBy(opt.value)}
-                style={{ ...filterTabStyle, ...(sortBy === opt.value ? filterTabActiveStyle : {}) }}>
-                {opt.label}
+            {SORT_OPTIONS.map((opt) => {
+              const active = sortBy === opt.value;
+              return (
+              <button key={opt.value} onClick={() => { if (active) setSortDesc(!sortDesc); else { setSortBy(opt.value); setSortDesc(false); } }}
+                style={{ ...filterTabStyle, ...(active ? filterTabActiveStyle : {}) }}>
+                {opt.label}{active ? (sortDesc ? ' ↓' : ' ↑') : ''}
               </button>
-            ))}
+              );
+            })}
           </div>
         </div>
 

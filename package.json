@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build && node scripts/fix-basepath.mjs",
+    "build": "node scripts/precompute-jp-reading.mjs && next build && node scripts/fix-basepath.mjs",
     "start": "next start",
     "export": "next build && next export",
     "db:init": "node scripts/init-db.mjs",
@@ -15,6 +15,8 @@
     "@supabase/supabase-js": "^2.39.0",
     "crypto-js": "^4.2.0",
     "js-sha256": "^0.11.0",
+    "kuroshiro": "^1.2.0",
+    "kuroshiro-analyzer-kuromoji": "^1.1.0",
     "next": "^14.2.0",
     "pg": "^8.22.0",
     "pinyin-pro": "^3.28.1",

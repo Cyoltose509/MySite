@@ -39,6 +39,7 @@ export function EventCounter() {
   const [mealList, setMealList] = useState<{id:string;title:string}[]>([]);
   const [mealSearch, setMealSearch] = useState('');
   const [mealAmount, setMealAmount] = useState('');
+  const [songIndex, setSongIndex] = useState<Record<string, string>>({});
 
   useEffect(() => {
     fetchGroups();
@@ -54,7 +55,20 @@ export function EventCounter() {
 
   const loadSongs = async () => {
     const {data} = await supabase.from('music_list').select('id,title,artist').order('created_at', { ascending: true });
-    setSongList(data || []);
+    const songs = data || [];
+    setSongList(songs);
+    // Load precomputed Japanese romaji readings
+    try {
+      const res = await fetch('/jp-readings.json');
+      const jpIdx: Record<string, string> = await res.json();
+      const songIdx: Record<string, string> = {};
+      for (const s of songs) {
+        let idx = getQuickSearchIndex(s.title) + ' ' + getQuickSearchIndex((s.artist || []).join(' '));
+        if (jpIdx[s.id]) idx += ' ' + jpIdx[s.id];
+        songIdx[s.id] = idx.toLowerCase();
+      }
+      setSongIndex(songIdx);
+    } catch { /* ignore */ }
   };
 
   const fetchGroups = async () => {
@@ -146,7 +160,11 @@ export function EventCounter() {
         const amt = parseFloat(mealAmount);
         if (!isNaN(amt)) p_refs = p_refs.map(r => ({...r, amount: amt}));
       }
-      const { error } = await supabase.from('event_logs').update({ refs: p_refs.length > 0 ? p_refs : null }).eq('id', logId);
+      const eventAt = new Date(`${recordDate}T${recordTime}:00`).toISOString();
+      const { error } = await supabase.from('event_logs').update({
+        refs: p_refs.length > 0 ? p_refs : null,
+        event_at: eventAt,
+      }).eq('id', logId);
       if (error) {
         setMessage({ text: `❌ 更新失败: ${error.message}`, type: 'err' });
       } else {
@@ -312,6 +330,16 @@ export function EventCounter() {
             <button onClick={() => { setShowSongPicker(null); setEditLogId(null); setSelectedRefs([]); }}
               style={{...styles.cancelBtn, padding:'4px 12px'}}>✕</button>
           </div>
+          {/* Time edit fields when editing existing event */}
+          {editLogId && (
+            <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:10 }}>
+              <span style={{ fontSize:11, color:'#a1a1aa' }}>时间</span>
+              <input type="date" value={recordDate} onChange={e => setRecordDate(e.target.value)}
+                style={{ ...styles.input, width:130 }} />
+              <input type="time" value={recordTime} onChange={e => setRecordTime(e.target.value)}
+                style={{ ...styles.input, width:100 }} />
+            </div>
+          )}
           {selectedRefs.map(s => (
             <span key={s.id} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',margin:'0 4px 4px 0',
               borderRadius:6,background:'rgba(99,102,241,0.15)',color:'#818cf8',fontSize:11}}>
@@ -351,8 +379,9 @@ export function EventCounter() {
             {list.filter(s => {
               if (!search) return true;
               const q = search.toLowerCase();
-              const idx = getQuickSearchIndex(s.title) + (isMeal ? '' : ' ' + getQuickSearchIndex((s as any).artist || [].join(' ')));
-              return idx.includes(q);
+              // For songs, use precomputed index with Japanese romaji
+              if (!isMeal && songIndex[s.id]) return songIndex[s.id].includes(q);
+              return getQuickSearchIndex(s.title).includes(q);
             }).slice(0, search ? 20 : undefined).map(s => (
                 <div key={s.id} onClick={() => { setSelectedRefs(prev => [...prev, {id:s.id,title:s.title}]); songInputRef.current?.focus(); }}
                   style={{padding:'5px 8px',cursor:'pointer',fontSize:12,color:'#a1a1aa',borderRadius:4,borderBottom:'1px solid rgba(255,255,255,0.04)'}}>
@@ -446,7 +475,18 @@ export function EventCounter() {
                   <span style={{ color: '#52525b', fontSize: 11, flex: 1 }}>{isMeal ? '未记录大餐' : '未记录歌曲'}</span>
                 ) : null}
                 {needsEdit && (
-                  <button onClick={(ev) => { ev.stopPropagation(); setEditLogId(l.id!); setShowSongPicker(l.group_id); setSelectedRefs(refs); setSongSearch(''); setMealSearch(''); }}
+                  <button onClick={(ev) => {
+                    ev.stopPropagation();
+                    setEditLogId(l.id!);
+                    setShowSongPicker(l.group_id);
+                    setSelectedRefs(refs);
+                    setSongSearch('');
+                    setMealSearch('');
+                    // Set time from event
+                    const d = new Date(l.event_at);
+                    setRecordDate(d.toISOString().slice(0, 10));
+                    setRecordTime(d.toTimeString().slice(0, 5));
+                  }}
                     style={{ background:'rgba(99,102,241,0.15)', border:'none', color:'#818cf8', fontSize: 11, cursor:'pointer', padding:'2px 8px', borderRadius: 4 }}>
                     ✏️ 编辑{isMeal ? '大餐' : '歌曲'}
                   </button>
