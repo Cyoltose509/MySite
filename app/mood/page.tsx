@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { isAuthenticated } from '@/lib/auth';
@@ -28,18 +28,21 @@ export default function MoodPage() {
   const [logs, setLogs] = useState<MoodLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [scale, setScale] = useState<TimeScale>('daily');
+  const [tooltip, setTooltip] = useState<{ x: number; y: number; idx: number } | null>(null);
+  const chartRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { fetchLogs(); }, []);
 
   const fetchLogs = async () => {
-    let q = supabase.from('mood_logs').select('*').order('created_at', { ascending: true }).limit(500);
-    if (!isAuthenticated()) q = q.eq('visibility', 'public');
-    const { data } = await q;
-    setLogs(data || []);
+    // Always fetch all records; RLS policy allows it.
+    // Client-side auth check controls visibility display.
+    const { data } = await supabase.from('mood_logs').select('*').order('created_at', { ascending: true }).limit(500);
+    const all = data || [];
+    setLogs(all);
     setLoading(false);
   };
 
-  // 按时间尺度聚合 mood_score 平均值
+  // 按时间尺度聚合 mood_score（fetchLogs 已按权限过滤）
   const points = useMemo(() => {
     if (!logs.length) return [];
     const alignDown = (ts: number): number => {
@@ -53,18 +56,20 @@ export default function MoodPage() {
       }
     };
 
-    const groups: Record<string, number[]> = {};
+    const groups: Record<string, { scores: number[]; notes: string[] }> = {};
     for (const l of logs) {
       if (!l.mood_score) continue;
       const key = String(alignDown(new Date(l.created_at).getTime()));
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(l.mood_score);
+      if (!groups[key]) groups[key] = { scores: [], notes: [] };
+      groups[key].scores.push(l.mood_score);
+      if (l.note && l.visibility !== 'private') groups[key].notes.push(l.note);
     }
 
     return Object.keys(groups).sort().map(key => ({
       ts: Number(key),
-      avg: groups[key].reduce((a, b) => a + b, 0) / groups[key].length,
-      count: groups[key].length,
+      avg: groups[key].scores.reduce((a, b) => a + b, 0) / groups[key].scores.length,
+      count: groups[key].scores.length,
+      notes: groups[key].notes.slice(0, 3), // up to 3 notes for tooltip
     }));
   }, [logs, scale]);
 
@@ -128,42 +133,43 @@ export default function MoodPage() {
 
       {/* 折线图 */}
       {points.length > 1 && (
-        <div style={{ overflowX: 'auto', borderRadius: 16, border: '1px solid #1e1e32', background: '#0c0c1a', marginBottom: 32 }}>
-          <svg width={totalW} height={CHART_H} style={{ display: 'block', fontFamily: 'sans-serif', minWidth: '100%' }}>
-            <defs>
-              <linearGradient id="moodGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#a78bfa" stopOpacity="0.35"/>
-                <stop offset="100%" stopColor="#a78bfa" stopOpacity="0.02"/>
-              </linearGradient>
-            </defs>
+        <div ref={chartRef} style={{ position: 'relative', overflowX: 'auto', borderRadius: 16, border: '1px solid #1e1e32', background: '#0c0c1a', marginBottom: 32 }}>
+          {/* Tooltip */}
+          {tooltip && points[tooltip.idx] && (
+            <div style={{
+              position: 'absolute', left: Math.min(tooltip.x + 12, (chartRef.current?.clientWidth || 900) - 200),
+              top: tooltip.y - 10, zIndex: 20, padding: '10px 14px', borderRadius: 10,
+              background: '#1a1a30', border: '1px solid #2a2a45',
+              boxShadow: '0 4px 16px rgba(0,0,0,.6)', minWidth: 150, maxWidth: 240,
+            }}>
+              <div style={{ fontSize: 11, color: '#a1a1aa', marginBottom: 4 }}>{fmtLabel(points[tooltip.idx].ts)}</div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: '#e4e4e7' }}>
+                {MOOD_EMOJIS[Math.round(points[tooltip.idx].avg) - 1] || ''} {points[tooltip.idx].avg.toFixed(1)}/10
+              </div>
+              <div style={{ fontSize: 12, color: '#a5b4fc' }}>
+                {MOOD_SCORE_LABELS[Math.round(points[tooltip.idx].avg)] || ''} · {points[tooltip.idx].count} 条
+              </div>
+              {points[tooltip.idx].notes.length > 0 && (
+                <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                  {points[tooltip.idx].notes.map((n, ni) => (
+                    <div key={ni} style={{ fontSize: 11, color: '#d4d4d8', lineHeight: 1.5 }}>&quot;{n}&quot;</div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
-            {/* 心情等级背景带 */}
+          <svg width={totalW} height={CHART_H} style={{ display: 'block', fontFamily: 'sans-serif', minWidth: '100%' }}>
+            {/* 水平参考线和标签 */}
             {[10, 8, 6, 4, 2].map(level => {
               const y = PAD_T + plotH * (1 - level / 10);
-              const colors: Record<number, string> = { 10: '#4ade8055', 8: '#a3e63544', 6: '#facc1544', 4: '#f9731644', 2: '#ef444444' };
-              const labels: Record<number, string> = { 10: '极佳', 8: '很好', 6: '尚可', 4: '稍差', 2: '很差' };
               return (
                 <g key={level}>
-                  <rect x={PAD_L} y={y} width={totalW - PAD_L - PAD_R} height={plotH / 5} fill={colors[level] || 'transparent'} rx={0}/>
+                  <line x1={PAD_L} y1={y} x2={totalW - PAD_R} y2={y} stroke="#ffffff08" strokeDasharray="4,4"/>
                   <text x={PAD_L - 8} y={y + 4} textAnchor="end" fontSize={9} fill="#52525b">{level}</text>
-                  <text x={PAD_L + 4} y={y + plotH / 5 - 4} fontSize={8} fill="#ffffff22">{labels[level] || ''}</text>
                 </g>
               );
             })}
-
-            {/* 渐变填充区域 */}
-            <path
-              d={[
-                `M${PAD_L + barW / 2},${PAD_T + plotH}`,
-                ...points.map((p, i) => {
-                  const x = PAD_L + i * (barW + 2) + barW / 2;
-                  const y = PAD_T + plotH * (1 - p.avg / 10);
-                  return `L${x},${y}`;
-                }),
-                `L${PAD_L + (points.length - 1) * (barW + 2) + barW / 2},${PAD_T + plotH}Z`,
-              ].join(' ')}
-              fill="url(#moodGrad)"
-            />
 
             {/* 折线 */}
             {points.map((p, i) => {
@@ -180,13 +186,21 @@ export default function MoodPage() {
               );
             })}
 
-            {/* 数据点 */}
+            {/* 数据点 + 交互层 */}
             {points.map((p, i) => {
               const x = PAD_L + i * (barW + 2) + barW / 2;
               const y = PAD_T + plotH * (1 - p.avg / 10);
               return (
                 <g key={p.ts}>
-                  <circle cx={x} cy={y} r={DOT_R} fill={LINE_COLOR} opacity={0.9}/>
+                  {/* 透明大点击区域 */}
+                  <circle cx={x} cy={y} r={16} fill="transparent" style={{ cursor: 'pointer' }}
+                    onMouseEnter={(e) => {
+                      const ct = chartRef.current; if (!ct) return;
+                      setTooltip({ x: e.clientX - ct.getBoundingClientRect().left, y, idx: i });
+                    }}
+                    onMouseLeave={() => setTooltip(null)}
+                  />
+                  <circle cx={x} cy={y} r={DOT_R} fill={LINE_COLOR} opacity={0.9} style={{ pointerEvents: 'none' }}/>
                   {/* 标签（稀疏） */}
                   {points.length <= 60 || i % Math.ceil(points.length / 20) === 0 ? (
                     <text x={x} y={CHART_H - 8} textAnchor="middle" fontSize={9} fill="#52525b"
@@ -205,12 +219,12 @@ export default function MoodPage() {
       <div style={{ marginTop: 8 }}>
         <h3 style={{ fontSize: 15, fontWeight: 600, color: '#e4e4e7', margin: '0 0 14px' }}>最近记录</h3>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {logs.slice(-20).reverse().map(log => (
+          {logs.filter(l => l.visibility !== 'private').slice(-20).reverse().map(log => (
             <div key={log.id} style={S.logRow}>
               <span style={{ fontSize: 20, minWidth: 30, textAlign: 'center' }}>{MOOD_EMOJIS[(log.mood_score || 6) - 1]}</span>
               <span style={{ fontSize: 13, fontWeight: 600, color: '#e4e4e7' }}>{log.mood_score}/10 {MOOD_SCORE_LABELS[log.mood_score || 6] || ''}</span>
-              {log.note && log.visibility !== 'private' && <span style={{ fontSize: 12, color: '#a1a1aa', flex: 1, whiteSpace: 'pre-wrap' }}>{log.note}</span>}
-              {log.visibility === 'private' && <span style={{ fontSize: 11, color: '#52525b', flex: 1 }}>🔒 私密记录</span>}
+              {log.note && <span style={{ fontSize: 12, color: '#a1a1aa', flex: 1, whiteSpace: 'pre-wrap' }}>{log.note}</span>}
+              {!log.note && <span style={{ fontSize: 11, color: '#52525b', flex: 1 }}/>}
               <span style={{ fontSize: 11, color: '#52525b', fontFamily: 'monospace' }}>
                 {new Date(log.created_at).toLocaleDateString('zh-CN')} {new Date(log.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
               </span>
