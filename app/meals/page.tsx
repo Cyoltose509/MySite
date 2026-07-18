@@ -10,6 +10,7 @@ import {
   controlsStyle, filterRowStyle, filterLabelStyle, filterTabsStyle, filterTabStyle, filterTabActiveStyle,
   statsRowStyle, searchInputStyle, modalOverlayStyle, modalStyle, modalCloseStyle,
 } from '@/lib/card-styles';
+import { getQuickSearchIndex } from '@/lib/search';
 
 interface MealRecord { id: string; title: string; rating: string; }
 interface MealTag { id?: string; meal_id: string; tag: string; note?: string; }
@@ -89,7 +90,7 @@ export default function MealsPage() {
       list.sort((a, b) => { const sa = totalSpent[a.id] || 0; const sb = totalSpent[b.id] || 0; if (sa !== sb) return sb - sa; return a.title.localeCompare(b.title); });
     } else list.sort((a, b) => a.title.localeCompare(b.title));
     if (sortDesc) list.reverse();
-    if (search.trim()) { const q = search.toLowerCase(); list = list.filter(m => m.title.toLowerCase().includes(q) || (tagsMap[m.id] || []).some(t => t.tag.includes(q))); }
+    if (search.trim()) { const q = search.toLowerCase(); list = list.filter(m => { const idx = getQuickSearchIndex((m.title + ' ' + (tagsMap[m.id] || []).map(t => t.tag).join(' ')).toLowerCase()); return idx.includes(q); }); }
     if (ratingFilter) list = list.filter(m => m.rating === ratingFilter);
     if (tagFilter) list = list.filter(m => (tagsMap[m.id] || []).some(t => t.tag === tagFilter));
     return list;

@@ -8,6 +8,7 @@ import {supabase} from '@/lib/supabase';
 import AnalysisPanel from '@/components/games/AnalysisPanel';
 import type { GameAnalysisItem } from '@/lib/game-analysis';
 import {PageLoading} from '@/components/shared';
+import {getQuickSearchIndex} from '@/lib/search';
 import {
     C,
     pageStyle,
@@ -158,7 +159,8 @@ export default function GamesPage() {
         if (search.trim()) {
             const q = search.toLowerCase();
             const tgs = tagsMap[g.id] || [];
-            return g.title.toLowerCase().includes(q) || tgs.some(t => t.tag.toLowerCase().includes(q));
+            const idx = getQuickSearchIndex((g.title + ' ' + tgs.map(t => t.tag).join(' ')).toLowerCase());
+            return idx.includes(q);
         }
         return true;
     });

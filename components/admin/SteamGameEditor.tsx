@@ -324,13 +324,12 @@ export function SteamGameEditor() {
                 <button onClick={async () => {
                   setSaving(true);
                   try {
-                    const res = await fetch('/api/import-steam-achievements', {
-                      method: 'POST', headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ appid: selectedGame.steam_app_id, gameId: selectedId }),
+                    const { data, error } = await supabase.functions.invoke('sync-steam', {
+                      body: { mode: 'achievements', appid: selectedGame.steam_app_id, gameId: selectedId },
                     });
-                    const d = await res.json();
-                    if (d.ok) { setMetrics(prev => ({ ...prev, achievements: d.achievements })); setMsg('✅ ' + d.note || '✅ 已导入'); }
-                    else setMsg('❌ ' + (d.error || '导入失败'));
+                    if (error) { setMsg('❌ ' + error.message); }
+                    else if (data?.ok) { setMetrics(prev => ({ ...prev, achievements: data.achievements ?? prev.achievements })); setMsg('✅ ' + (data.note || '已导入')); }
+                    else setMsg('❌ ' + (data?.error || '导入失败'));
                   } catch { setMsg('❌ 网络错误'); }
                   setSaving(false);
                   setTimeout(() => setMsg(''), 2500);

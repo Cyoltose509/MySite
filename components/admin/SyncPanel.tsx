@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { getSession } from '@/lib/auth';
+import { supabase } from '@/lib/supabase';
 import { fetchNeteasePlaylist, syncNeteaseToSupabase, syncCoversToSupabase } from '@/lib/sync/netease';
 import { SyncProgressModal, SyncStep } from '@/components/ui/SyncProgressModal';
 
@@ -46,34 +47,21 @@ export function SyncPanel() {
     setShowProgress(true);
     setProgressSteps([]);
     try {
-      addStep({ phase: 'fetching', current: 0, total: 0, message: '正在同步游戏列表...' });
-      const resp = await fetch('/api/sync-steam');
-      const json = await resp.json();
-      if (!json.ok) throw new Error(json.error || '同步失败');
+      addStep({ phase: 'fetching', current: 0, total: 0, message: '正在通过 Supabase 同步 Steam 游戏库...' });
+      const { data, error } = await supabase.functions.invoke('sync-steam', { body: { mode: 'full' } });
+      if (error) throw new Error(error.message || '调用同步函数失败');
+      if (!data?.ok) throw new Error(data?.error || '同步失败');
 
-      const { count, games } = json;
-      addStep({ phase: 'syncing', current: count, total: count, message: `✅ 已同步 ${count} 款游戏` });
+      addStep({ phase: 'syncing', current: data.synced, total: data.synced, message: `✅ ${data.message}` });
 
-      if (games?.length) {
-        addStep({ phase: 'syncing', current: 0, total: games.length, message: '正在获取游戏标签...' });
-        let total = 0;
-        let i = 0;
-        for (const g of games) {
-          i++;
-          const tr = await fetch('/api/sync-steam', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ appid: g.appid, name: g.name }),
-          });
-          const tj = await tr.json();
-          if (tj.ok && tj.tags > 0) {
-            total += tj.tags;
-            addStep({ phase: 'syncing', current: i, total: games.length, message: `🎮 ${tj.name} → ${tj.tags} 个标签` });
-          }
-        }
-        addStep({ phase: 'done', current: games.length, total: games.length, message: `✅ 共 ${total} 个标签` });
-        setSteamResult(`✅ ${count} 款游戏，${total} 个标签`);
+      if (data.newGames?.length) {
+        const names = data.newGames.slice(0, 12).map((g: { name: string }) => g.name).join('、');
+        const more = data.newGames.length > 12 ? ` 等 ${data.newGames.length} 款` : '';
+        addStep({ phase: 'done', current: data.newGames.length, total: data.newGames.length, message: `🆕 新游戏：${names}${more}` });
+      } else {
+        addStep({ phase: 'done', current: 0, total: 0, message: '🆕 没有新游戏' });
       }
+      setSteamResult(`✅ ${data.message}`);
     } catch (err: any) {
       addStep({ phase: 'syncing', current: 0, total: 0, message: err.message });
       setSteamResult('❌ ' + err.message);

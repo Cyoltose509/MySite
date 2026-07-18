@@ -159,6 +159,16 @@ export default function DashboardPage() {
         )}
       </header>
 
+      {/* 快捷导航 */}
+      <nav style={{ display: 'flex', gap: 8, marginBottom: 28, flexWrap: 'wrap' }}>
+        <Link href="/predict" style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6,
+          padding: '8px 16px', borderRadius: 12, fontSize: 13,
+          border: '1px solid ' + C.accent, background: C.surface,
+          color: C.accentLt, textDecoration: 'none', fontWeight: 600,
+        }}>🔮 预测中心</Link>
+      </nav>
+
       {/* 数据概览 - 番剧 & 音乐 & 睡眠统计卡片 */}
       <section style={{ marginBottom: 32 }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 12 }}>

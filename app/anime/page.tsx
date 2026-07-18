@@ -18,6 +18,7 @@ import { PageLoading } from '@/components/shared';
 
 import { getAnimeList, getAnimeCovers, getAnimeQuartzLink, clearAnimeCache } from '@/lib/anime-data';
 import AnalysisPanel from '@/components/anime/AnalysisPanel';
+import { getQuickSearchIndex } from '@/lib/search';
 
 const STATUS_ORDER: Record<string, number> = { '看完': 0, '正在看': 1, '中道崩殂': 2, '未知': 3 };
 const STATUS_LABELS: Record<string, string> = { '看完': '看完', '正在看': '在追', '中道崩殂': '弃了', '未知': '?' };
@@ -149,7 +150,8 @@ export default function AnimePage() {
     if (tagFilter && !(a.tags || []).includes(tagFilter)) return false;
     if (search.trim()) {
       const q = search.toLowerCase();
-      return a.title.toLowerCase().includes(q) || (a.tags || []).some(t => t.toLowerCase().includes(q));
+      const idx = getQuickSearchIndex((a.title + ' ' + (a.tags || []).join(' ')).toLowerCase());
+      return idx.includes(q);
     }
     return true;
   });

@@ -18,6 +18,7 @@ import {
   scoreRowStyle, scoreBarContainerStyle, scoreLabelStyle, scoreNumStyle,
 } from '@/lib/card-styles';
 import { PageLoading } from '@/components/shared';
+import { getQuickSearchIndex } from '@/lib/search';
 
 interface MusicRecord {
   id: string;
@@ -251,7 +252,12 @@ export default function MusicPage() {
     : bySingability;
 
   const filtered = search.trim()
-    ? byArtist.filter(m => m.title.toLowerCase().includes(search.toLowerCase()) || (m.artist || []).join(' / ').toLowerCase().includes(search.toLowerCase()))
+    ? byArtist.filter(m => {
+        const q = search.toLowerCase();
+        const artistStr = Array.isArray(m.artist) ? m.artist.join(' ') : String(m.artist || '');
+        const idx = getQuickSearchIndex((m.title + ' ' + artistStr).toLowerCase());
+        return idx.includes(q);
+      })
     : byArtist;
 
   const fmtDur = (sec: number | null) => {
