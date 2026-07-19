@@ -104,6 +104,34 @@ if (typeof window !== 'undefined') {
   (window as unknown as Record<string, unknown>).unlockPrivate = unlockPrivate;
   (window as unknown as Record<string, unknown>).lockPrivate = lockPrivate;
   (window as unknown as Record<string, unknown>).privateStatus = privateStatus;
+  // 诊断工具：绕过 React 直接调用 admin RPC，验证数据通路
+  (window as unknown as Record<string, unknown>).testPrivate = async () => {
+    const s = privateStatus();
+    console.log('[testPrivate] localStorage 会话:', s);
+    if (!s.unlocked) { console.warn('[testPrivate] 未解锁，请先 unlockPrivate'); return; }
+    const hash = localStorage.getItem('datahub_pwd_hash');
+    console.log('[testPrivate] 哈希:', hash?.slice(0, 12) + '...');
+    const [{ data: ev }, { data: mo }] = await Promise.all([
+      supabase.rpc('fn_get_event_logs_admin', { p_hash: hash }),
+      supabase.rpc('fn_get_mood_logs_admin',   { p_hash: hash }),
+    ]);
+    const evCount = Array.isArray(ev) ? ev.length : 'Error/NULL';
+    const moCount = Array.isArray(mo) ? mo.length : 'Error/NULL';
+    const evPrivate = Array.isArray(ev) ? ev.filter((l: any) => l.is_private).length : '?';
+    console.log(`[testPrivate] 事件日志: ${evCount} 条, 其中私密组: ${evPrivate} 条`);
+    console.log(`[testPrivate] 心情日志: ${moCount} 条`);
+    if (Array.isArray(ev) && ev.length > 0) {
+      // 找一条私密事件展示
+      const priv = ev.filter((l: any) => l.is_private);
+      if (priv.length) {
+        console.log('[testPrivate] 示例私密事件:', priv[0].group_name, priv[0].event_at);
+      } else {
+        console.warn('[testPrivate] RPC 返回了数据但 is_private 全为 false？');
+      }
+    }
+    return { evCount, moCount, evPrivate };
+  };
+  //console.info('[private] 已就绪');
 }
 
 /**

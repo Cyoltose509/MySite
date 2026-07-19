@@ -51,6 +51,7 @@ export default function MoodPage() {
             visibility: (m.visibility as 'public' | 'private') || 'public',
             created_at: m.created_at as string,
           }));
+          all.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
         }
       }
     }

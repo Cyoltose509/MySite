@@ -81,12 +81,31 @@ export default function DashboardPage() {
     }
     setRecentMoods(recentMoods);
 
-    // 事件组
-    const { data: gData } = await supabase
-      .from('event_groups')
-      .select('*')
-      .order('sort_order', { ascending: true });
-    const visibleGroups = (gData || []).filter((g) => unlocked || !g.is_private);
+    // 事件组：解锁后走 admin RPC 拿全部（含私密），否则公开查
+    let visibleGroups: EventGroup[] = [];
+    if (unlocked) {
+      const gHash = getSession();
+      if (gHash) {
+        const { data: privGroups } = await supabase.rpc('fn_get_event_groups_admin', { p_hash: gHash });
+        if (privGroups && Array.isArray(privGroups)) {
+          visibleGroups = (privGroups as Array<Record<string, unknown>>).map((r) => ({
+            id: r.id as string,
+            name: r.name as string,
+            icon: (r.icon as string) || '📌',
+            color: (r.color as string) || '#6366f1',
+            is_private: !!(r as { is_private?: boolean }).is_private,
+            count: 0,
+          }));
+        }
+      }
+    }
+    if (!visibleGroups.length) {
+      const { data: gData } = await supabase
+        .from('event_groups')
+        .select('*')
+        .order('sort_order', { ascending: true });
+      visibleGroups = (gData || []).map((g) => ({ ...g, count: 0 }));
+    }
 
     // 解锁后一次性拉取全部日志以计算真实计数（含私密组）；否则逐组查公开计数
     let allLogs: Array<{ group_id: string }> = [];

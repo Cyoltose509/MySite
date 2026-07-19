@@ -48,9 +48,22 @@ export default function PredictPage() {
     const thisYear = new Date().getFullYear();
     try { setHolidaySet(await fetchHolidays(thisYear)); } catch { /* 静默使用内置表 */ }
 
-    const [{ data: gData }, { data: lData }, { data: mData }, { data: tData }, { data: mealData }, { data: moodData }, { data: sleepData }] =
+    let groupsData: EventGroupLite[] = [];
+    if (unlocked) {
+      const gHash = getSession();
+      if (gHash) {
+        const { data: privGroups } = await supabase.rpc('fn_get_event_groups_admin', { p_hash: gHash });
+        if (privGroups && Array.isArray(privGroups)) groupsData = privGroups as EventGroupLite[];
+      }
+    }
+    if (!groupsData.length) {
+      const { data: gData } = await supabase.from('event_groups').select('id, name, icon, color, sort_order').order('sort_order');
+      groupsData = (gData || []) as EventGroupLite[];
+    }
+    setGroups(groupsData);
+
+    const [{ data: lData }, { data: mData }, { data: tData }, { data: mealData }, { data: moodData }, { data: sleepData }] =
       await Promise.all([
-        supabase.from('event_groups').select('id, name, icon, color, sort_order').order('sort_order'),
         supabase.from('event_logs').select('id, group_id, event_at, refs'),
         supabase.from('music_list').select('id, title, artist, created_at'),
         supabase.from('music_tags').select('music_id, singability, likability'),
@@ -59,7 +72,6 @@ export default function PredictPage() {
         supabase.from('health_sleep').select('start_date, duration_minutes'),
       ]);
 
-    setGroups((gData || []) as EventGroupLite[]);
     let mergedLogs = (lData || []) as EventLogLite[];
     if (unlocked) {
       const hash = getSession();
