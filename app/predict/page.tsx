@@ -3,6 +3,8 @@
 import { useEffect, useState, useMemo } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
+import { getSession } from '@/lib/auth';
+import { usePrivateAccess } from '@/lib/private';
 import {
   C, pageStyle, headerStyle, h1Style, backLinkStyle, emptyStyle,
   loadingContainerStyle, spinnerStyle, loadingTextStyle,
@@ -11,7 +13,10 @@ import {
   computeTiming, predictNextEntityMarkov, computeGroupDependencies, weekdayName,
   countdownText, fmtDate, CONFIDENCE_LABEL, CONFIDENCE_COLOR, assocColor, assocLabel,
   predictNoveltyMeal, predictNewSongCount,
+  buildDailyFeatures, computeCrossDomain, predictScenarioMotifs, detectChangePoints, detectRegimes, clusterDayArchetypes,
+  forecastFutureRegimes, setHolidaySet, fetchHolidays,
   type EventLogLite, type EventGroupLite, type EntityRank, type MarkovItem, type GroupDep,
+  type MoodPoint, type SleepPoint, type ForecastSeries, type ForecastResult,
 } from '@/lib/prediction';
 
 interface MusicLite { id: string; title: string; artist: string[]; created_at?: string; }
@@ -29,23 +34,53 @@ export default function PredictPage() {
   const [mealById, setMealById] = useState<Record<string, MealLite>>({});
   const [songTopN, setSongTopN] = useState(10);
   const [songTopNInput, setSongTopNInput] = useState('10');
+  const [moodData, setMoodData] = useState<MoodPoint[]>([]);
+  const [sleepData, setSleepData] = useState<SleepPoint[]>([]);
   const [loading, setLoading] = useState(true);
+  const { unlocked, refreshKey } = usePrivateAccess();
 
-  useEffect(() => { fetchData(); }, []);
+  useEffect(() => { fetchData(); }, [refreshKey]);
 
   const fetchData = async () => {
     setLoading(true);
-    const [{ data: gData }, { data: lData }, { data: mData }, { data: tData }, { data: mealData }] =
+
+    // 尝试从网络拉取当年节假日表，失败时退回到内置表
+    const thisYear = new Date().getFullYear();
+    try { setHolidaySet(await fetchHolidays(thisYear)); } catch { /* 静默使用内置表 */ }
+
+    const [{ data: gData }, { data: lData }, { data: mData }, { data: tData }, { data: mealData }, { data: moodData }, { data: sleepData }] =
       await Promise.all([
         supabase.from('event_groups').select('id, name, icon, color, sort_order').order('sort_order'),
         supabase.from('event_logs').select('id, group_id, event_at, refs'),
         supabase.from('music_list').select('id, title, artist, created_at'),
         supabase.from('music_tags').select('music_id, singability, likability'),
         supabase.from('meals').select('id, title, rating'),
+        supabase.from('mood_logs').select('created_at, mood_score'),
+        supabase.from('health_sleep').select('start_date, duration_minutes'),
       ]);
 
     setGroups((gData || []) as EventGroupLite[]);
-    setRawLogs((lData || []) as EventLogLite[]);
+    let mergedLogs = (lData || []) as EventLogLite[];
+    if (unlocked) {
+      const hash = getSession();
+      if (hash) {
+        const { data: priv } = await supabase.rpc('fn_get_event_logs_admin', { p_hash: hash });
+        if (priv && Array.isArray(priv)) {
+          const privLogs = (priv as Array<Record<string, unknown>>).map((r) => ({
+            id: r.id as string,
+            group_id: r.group_id as string,
+            event_at: r.event_at as string,
+            refs: (r.refs as { id: string; title: string }[]) || undefined,
+          })) as EventLogLite[];
+          // 以 id 去重合并（私密日志补齐公开所缺）
+          const byId = new Map<string, EventLogLite>();
+          for (const l of mergedLogs) if (l.id) byId.set(l.id, l);
+          for (const l of privLogs) if (l.id && !byId.has(l.id)) byId.set(l.id, l);
+          mergedLogs = [...byId.values()];
+        }
+      }
+    }
+    setRawLogs(mergedLogs);
 
     const mb: Record<string, MusicLite> = {};
     for (const m of (mData || []) as MusicLite[]) mb[m.id] = m;
@@ -58,6 +93,9 @@ export default function PredictPage() {
     const ml: Record<string, MealLite> = {};
     for (const m of (mealData || []) as MealLite[]) ml[m.id] = m;
     setMealById(ml);
+
+    setMoodData((moodData || []) as MoodPoint[]);
+    setSleepData((sleepData || []) as SleepPoint[]);
 
     setLoading(false);
   };
@@ -161,6 +199,29 @@ export default function PredictPage() {
 
   const deps = useMemo(() => computeGroupDependencies(groups, logsByGroup, 2), [groups, logsByGroup]);
 
+  // 高级预测：每日特征 + 跨域联动 + 场景motif + 习惯漂移 + 日常原型聚类
+  const dailyFeatures = useMemo(
+    () => buildDailyFeatures(rawLogs, groups, moodData, sleepData),
+    [rawLogs, groups, moodData, sleepData]
+  );
+  const crossDomain = useMemo(() => computeCrossDomain(dailyFeatures, groups), [dailyFeatures, groups]);
+  const mealMotif = useMemo(
+    () => (mealGroup ? predictScenarioMotifs(rawLogs, groups, mealGroup.id) : null),
+    [mealGroup, rawLogs, groups]
+  );
+  const songMotif = useMemo(
+    () => (songGroup ? predictScenarioMotifs(rawLogs, groups, songGroup.id) : null),
+    [songGroup, rawLogs, groups]
+  );
+  const changePoints = useMemo(() => detectChangePoints(logsByGroup, groups), [logsByGroup, groups]);
+  const regimes = useMemo(() => detectRegimes(logsByGroup, groups), [logsByGroup, groups]);
+  // 阶段起伏预测：基于历史 regime 向前外推未来曲线（必须放在 regimes 之后）
+  const forecast = useMemo(
+    () => forecastFutureRegimes(regimes, groups, logsByGroup, { horizonWeeks: 16 }),
+    [regimes, groups]
+  );
+  const archetypes = useMemo(() => clusterDayArchetypes(dailyFeatures, groups, 4), [dailyFeatures, groups]);
+
   const songArtist = (id: string) => musicById[id]?.artist || [];
   const songSing = (id: string) => tagByMusic[id]?.singability;
   const songLike = (id: string) => tagByMusic[id]?.likability;
@@ -237,6 +298,14 @@ export default function PredictPage() {
                 </div>
               </div>
             )}
+            {mealMotif && (
+              <div style={{ fontSize: 12, color: C.textSec, marginTop: 12 }}>
+                🎲 大餐常伴随：
+                {mealMotif.companions.length
+                  ? mealMotif.companions.map((c) => `${c.icon}${c.name} ×${c.lift.toFixed(1)}`).join(' · ')
+                  : '无明显关联活动'}
+              </div>
+            )}
             <RecencyList ranking={mealPred.ranking.slice(0, 5)} verb="吃过" emptyStyle={emptyStyle} />
           </>
         ) : (
@@ -297,6 +366,14 @@ export default function PredictPage() {
                 🆕 下场预计唱 <b style={{ color: C.text }}>{songNewCount.expected.toFixed(1)}</b> 首新歌（此前没唱过的），至少 1 首的概率 <b style={{ color: C.text }}>{(songNewCount.pAtLeastOne * 100).toFixed(0)}%</b>。
               </div>
             )}
+            {songMotif && (
+              <div style={{ fontSize: 12, color: C.textSec, marginTop: 12 }}>
+                🎲 唱K 常伴随：
+                {songMotif.companions.length
+                  ? songMotif.companions.map((c) => `${c.icon}${c.name} ×${c.lift.toFixed(1)}`).join(' · ')
+                  : '无明显关联活动'}
+              </div>
+            )}
             <RecencyList ranking={songPred.ranking.slice(0, 5)} verb="唱过" emptyStyle={emptyStyle} />
           </>
         ) : (
@@ -312,6 +389,88 @@ export default function PredictPage() {
           </>
         ) : (
           <p style={emptyStyle}>暂未发现明显的跨事件关联（或数据不足）</p>
+        )}
+      </Section>
+
+      {/* ── 跨域联动（心情/睡眠 × 事件） ── */}
+      <Section title="🧠 跨域联动（心情 / 睡眠 × 事件）">
+        {crossDomain.hasMood || crossDomain.hasSleep ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {crossDomain.byGroup.slice(0, 8).map((s) => (
+              <div key={s.groupId} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderRadius: 10, background: C.surface, border: '1px solid ' + C.border }}>
+                <span style={{ fontSize: 16 }}>{s.groupIcon}</span>
+                <span style={{ flex: 1, fontSize: 13, color: C.text }}>{s.groupName}</span>
+                {crossDomain.hasMood && (
+                  <span style={{ fontSize: 12, color: s.moodLift >= 0 ? '#4ade80' : '#f87171', width: 76, textAlign: 'right' }}>
+                    心情 {s.moodOn ? (s.moodLift >= 0 ? '+' : '') + s.moodLift.toFixed(1) : '—'}
+                  </span>
+                )}
+                {crossDomain.hasSleep && (
+                  <span style={{ fontSize: 12, color: s.sleepLiftMin >= 0 ? '#4ade80' : '#f87171', width: 80, textAlign: 'right' }}>
+                    睡眠 {s.sleepLiftMin >= 0 ? '+' : ''}{s.sleepLiftMin.toFixed(0)}′
+                  </span>
+                )}
+              </div>
+            ))}
+            <p style={{ fontSize: 11, color: C.textDim, marginTop: 4 }}>
+              数值 = 该事件发生的日子，心情分 / 睡眠时长相对你整体基线的平均偏差（偏差越大越能说明它影响你的状态）。
+            </p>
+          </div>
+        ) : (
+          <p style={emptyStyle}>还没有心情 / 睡眠记录，无法做跨域联动</p>
+        )}
+      </Section>
+
+      {/* ── 习惯漂移 / 阶段起伏（预测） ── */}
+      <Section title="📉 习惯漂移 / 阶段起伏（预测）">
+        {changePoints.length ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {changePoints.map((cp) => (
+              <div key={cp.groupId} style={{ padding: '11px 14px', borderRadius: 12, background: C.surface, border: '1px solid ' + C.border }}>
+                <div style={{ fontSize: 13, color: C.text, fontWeight: 600 }}>
+                  {cp.groupIcon} {cp.groupName}：自 {cp.date} 起频率{cp.drop ? '下降' : '上升'} {(Math.abs(cp.relChange) * 100).toFixed(0)}%
+                </div>
+                <div style={{ fontSize: 12, color: C.textSec, marginTop: 4 }}>
+                  {cp.beforeRate.toFixed(2)} 次/天 → {cp.afterRate.toFixed(2)} 次/天（{cp.drop ? '变冷' : '变热'}）
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p style={emptyStyle}>暂未发现明显的习惯频率突变（或数据不足）</p>
+        )}
+        {forecast.series.length > 0 && (
+          <>
+            <div style={{ fontSize: 12, color: C.textSec, margin: '16px 0 10px', fontWeight: 600 }}>🔮 未来阶段起伏预测</div>
+            <ForecastChart forecast={forecast} />
+          </>
+        )}
+      </Section>
+
+      {/* ── 日常原型聚类 ── */}
+      <Section title="🗓️ 日常原型">
+        {archetypes.archetypes.length ? (
+          <>
+            {archetypes.nextClusterLabel && (
+              <div style={{ padding: '10px 14px', borderRadius: 12, marginBottom: 12, background: C.surface, border: '1px solid ' + C.borderLit, fontSize: 13, color: C.text }}>
+                明天大概率：<b style={{ color: C.accentLt }}>{archetypes.nextClusterLabel}</b>
+                {' '}（典型：{archetypes.archetypes.find((a) => a.label === archetypes.nextClusterLabel)?.topGroups.map((t) => t.name).join(' · ')}）
+              </div>
+            )}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: 10 }}>
+              {archetypes.archetypes.map((a) => (
+                <div key={a.id} style={{ padding: 12, borderRadius: 12, background: C.surface, border: '1px solid ' + C.border }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>
+                    {a.label} <span style={{ fontSize: 11, color: C.textDim, fontWeight: 400 }}>· {a.size}天</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: C.textSec, marginTop: 5 }}>{a.topGroups.map((t) => `${t.icon}${t.name}`).join(' ')}</div>
+                  {a.avgMood !== undefined && <div style={{ fontSize: 11, color: C.textDim, marginTop: 2 }}>均心情 {a.avgMood.toFixed(1)}</div>}
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <p style={emptyStyle}>天数不足，无法聚类（至少需要 4 天）</p>
         )}
       </Section>
 
@@ -379,6 +538,55 @@ export default function PredictPage() {
                       </div>
                     </div>
 
+                    {/* 日类型偏好：工作日 / 周末 / 节假日（按每天发生率归一） */}
+                    {(() => {
+                      const dr = t.dayTypeRate;
+                      const labels: Record<string, string> = { weekday: '工作日', weekend: '周末', holiday: '节假日' };
+                      if (!t.modalDayType) {
+                        return (
+                          <div style={{ marginTop: 10, fontSize: 11, color: C.textDim }}>
+                            日类型：无明显偏好（每天发生率≈均匀）
+                            <span style={{ marginLeft: 8 }}>
+                              工{dr.weekday.toFixed(2)} · 末{dr.weekend.toFixed(2)} · 假{dr.holiday.toFixed(2)} 次/天
+                            </span>
+                          </div>
+                        );
+                      }
+                      return (
+                        <div style={{ marginTop: 10, fontSize: 11, color: C.textSec }}>
+                          日类型偏好：偏 {labels[t.modalDayType]}（{t.dayTypePrefIndex.toFixed(2)}× 整体）
+                          <span style={{ marginLeft: 8, color: C.textDim }}>
+                            工{dr.weekday.toFixed(2)} · 末{dr.weekend.toFixed(2)} · 假{dr.holiday.toFixed(2)} 次/天
+                          </span>
+                        </div>
+                      );
+                    })()}
+
+                    {/* 时段偏好：凌晨/上午/下午/晚间（北京时间，去均匀基线） */}
+                    {(() => {
+                      const td = t.todDist;
+                      const labels = ['凌晨', '上午', '下午', '晚间'];
+                      if (!t.timeOfDayPref) {
+                        return (
+                          <div style={{ marginTop: 6, fontSize: 11, color: C.textDim }}>
+                            时段：无明显偏好（各段≈均匀）
+                            <span style={{ marginLeft: 8 }}>
+                              {labels.map((l, i) => `${l}${(td[i] * 100).toFixed(0)}%`).join(' · ')}
+                            </span>
+                          </div>
+                        );
+                      }
+                      return (
+                        <div style={{ marginTop: 6, fontSize: 11, color: C.textSec }}>
+                          时段偏好：偏{t.timeOfDayPref}
+                          {t.prefHour !== null && <span style={{ marginLeft: 4 }}>（峰值 {t.prefHour}时）</span>}
+                          <span style={{ marginLeft: 8, color: C.textDim }}>
+                            {labels.map((l, i) => `${l}${(td[i] * 100).toFixed(0)}%`).join(' · ')}
+                          </span>
+                        </div>
+                      );
+                    })()}
+
                     {t.band.p25 && t.band.p75 && (
                       <div style={{ fontSize: 11, color: C.textSec, marginTop: 10 }}>
                         大概率区间：{fmtDate(t.band.p25)} ~ {fmtDate(t.band.p75)}
@@ -396,6 +604,7 @@ export default function PredictPage() {
         <p>模型：指数衰减加权间隔 + 星期季节性修正 + 经验分位预测区间</p>
         <p>下一个对象：一阶 Markov 转移 × 偏好评分（大餐评分 / 歌曲 喜欢度×能唱度）</p>
         <p>跨事件：日频 Pearson 相关 + 条件共现（关系图展示）</p>
+        <p>高级：跨域联动(心情/睡眠) + 生存分析(危险率) + 场景motif + 习惯漂移 + K-means日常原型 + 阶段起伏外推(未来预测)</p>
         <p>Powered by DataHub</p>
       </footer>
     </div>
@@ -427,19 +636,34 @@ function TimeLine({ timing, label }: { timing: ReturnType<typeof computeTiming> 
   }
   const cd = countdownText(timing.predictedNextAt);
   const confColor = CONFIDENCE_COLOR[timing.confidence];
+  const predBjHour = (new Date(timing.predictedNextAt).getUTCHours() + 8) % 24;
   return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 8, marginTop: -4, marginBottom: 12,
-      padding: '9px 12px', borderRadius: 10, background: C.surface, border: '1px solid ' + C.border,
-    }}>
-      <span style={{ fontSize: 16 }}>📅</span>
-      <span style={{ fontSize: 13, color: C.text }}>
-        预计下次{label}：<b style={{ color: C.accentLt }}>{fmtDate(timing.predictedNextAt)}</b>
-      </span>
-      <span style={{ marginLeft: 'auto', fontSize: 12, color: cd.overdue ? C.red : C.textSec, whiteSpace: 'nowrap' }}>{cd.text}</span>
-      <span style={{ fontSize: 11, color: confColor, border: `1px solid ${confColor}`, padding: '1px 7px', borderRadius: 10, whiteSpace: 'nowrap' }}>
-        {CONFIDENCE_LABEL[timing.confidence]}
-      </span>
+    <div style={{ marginTop: -4, marginBottom: 12, padding: '9px 12px', borderRadius: 10, background: C.surface, border: '1px solid ' + C.border }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ fontSize: 16 }}>📅</span>
+        <span style={{ fontSize: 13, color: C.text }}>
+          预计下次{label}：<b style={{ color: C.accentLt }}>{fmtDate(timing.predictedNextAt)}</b>
+          {timing.prefHour !== null && (
+            <span style={{ fontSize: 11, color: C.textDim, marginLeft: 6 }}>约 {predBjHour}时</span>
+          )}
+          {timing.modalDayType && (
+            <span style={{ fontSize: 11, color: C.textDim, marginLeft: 6 }}>
+              倾向于{timing.modalDayType === 'holiday' ? '节假日' : timing.modalDayType === 'weekend' ? '周末' : '工作日'}
+            </span>
+          )}
+        </span>
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: cd.overdue ? C.red : C.textSec, whiteSpace: 'nowrap' }}>{cd.text}</span>
+        <span style={{ fontSize: 11, color: confColor, border: `1px solid ${confColor}`, padding: '1px 7px', borderRadius: 10, whiteSpace: 'nowrap' }}>
+          {CONFIDENCE_LABEL[timing.confidence]}
+        </span>
+      </div>
+      {timing.hazardNow !== undefined && (
+        <div style={{ fontSize: 11, color: C.textDim, marginTop: 6, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          <span>今天发生概率 <b style={{ color: C.text }}>{(timing.hazardNow * 100).toFixed(0)}%</b></span>
+          <span>已隔 <b style={{ color: C.text }}>{timing.currentGapDays!.toFixed(0)}</b> 天</span>
+          {timing.offRoutine && <span style={{ color: C.red }}>⚠️ 已偏离常规节奏</span>}
+        </div>
+      )}
     </div>
   );
 }
@@ -593,6 +817,234 @@ function DependencyDetail({ dep, onBack }: { dep: GroupDep; onBack: () => void }
       <Row label={`发生 ${dep.bName} 后 ${dep.windowDays} 天内出现 ${dep.aName}`} value={`${(dep.pGivenB * 100).toFixed(0)}%`} />
       <Row label="共现次数" value={`${dep.jointCount} 次`} />
       <Row label="关联强度" value={`${(strength * 100).toFixed(0)}%`} />
+    </div>
+  );
+}
+
+function smoothPath(pts: { x: number; y: number }[]) {
+  if (pts.length < 2) return pts.length ? `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}` : '';
+  let d = `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[i + 2] || p2;
+    const c1x = p1.x + (p2.x - p0.x) / 6;
+    const c1y = p1.y + (p2.y - p0.y) / 6;
+    const c2x = p2.x - (p3.x - p1.x) / 6;
+    const c2y = p2.y - (p3.y - p1.y) / 6;
+    d += ` C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
+  }
+  return d;
+}
+
+function maSmooth(points: { x: number; y: number }[], window = 7) {
+  const out: { x: number; y: number }[] = [];
+  for (let i = 0; i < points.length; i++) {
+    const lo = Math.max(0, i - Math.floor(window / 2));
+    const hi = Math.min(points.length - 1, i + Math.floor(window / 2));
+    let sum = 0, cnt = 0;
+    for (let j = lo; j <= hi; j++) { sum += points[j].y; cnt++; }
+    out.push({ x: points[i].x, y: sum / cnt });
+  }
+  return out;
+}
+
+/* ── 阶段起伏预测图：历史 regime 向前外推 → 7 天移动平均 + Catmull-Rom 样条平滑 + 悬停探测 ── */
+function ForecastChart({ forecast }: { forecast: ForecastResult }) {
+  const [normalize, setNormalize] = useState(false); // 默认统一刻度（/天），看实际量级
+  const [hidden, setHidden] = useState<Set<string>>(new Set());
+  const [hoverDay, setHoverDay] = useState<number | null>(null);
+
+  const W = 720, H = 340;
+  const padL = 42, padR = 14, padT = 14, padB = 26;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const horizon = forecast.horizonWeeks;
+  const horizonDays = horizon * 7;
+
+  const palette = ['#818cf8', '#4ade80', '#eab308', '#f87171', '#a855f7', '#22d3ee', '#fb923c', '#f472b6', '#34d399', '#60a5fa'];
+  const colorOf = (s: ForecastSeries, i: number) => (s.color && s.color.startsWith('#')) ? s.color : palette[i % palette.length];
+
+  const seriesMax = (s: ForecastSeries) => Math.max(1e-6, ...s.forecast.map((p) => p.rate));
+  const xAt = (d: number) => padL + (d / horizonDays) * plotW;
+  const yTopFor = (s: ForecastSeries) => (normalize ? seriesMax(s) : forecast.maxRate);
+  const yAt = (rate: number, s: ForecastSeries) => {
+    const top = yTopFor(s);
+    return padT + plotH - (Math.min(rate, top) / top) * plotH;
+  };
+
+  // 平滑曲线：先 7 天移动平均降噪，再用 Catmull-Rom 样条连接成丝滑曲线。
+  const buildPath = (s: ForecastSeries) => {
+    const raw = s.forecast.map((p, d) => ({ x: xAt(d), y: p.rate }));
+    const smoothed = maSmooth(raw, 7);
+    const pts = smoothed.map((p) => ({ ...p, y: yAt(p.y, s) }));
+    return { mean: smoothPath(pts), dots: smoothed.map((p, d) => ({ day: d, x: p.x, y: yAt(p.y, s), rate: raw[d].y })) };
+  };
+
+  // 预计算各系列（按天）的克里金路径 + 置信带 + 逐日点，供绘制与悬停共用
+  const seriesPaths = useMemo(
+    () => forecast.series.filter((s) => !hidden.has(s.groupId)).map((s) => ({ s, ...buildPath(s) })),
+    [hidden, normalize, forecast, horizonDays]
+  );
+
+  const yTicks = 4;
+  const yGrid = Array.from({ length: yTicks + 1 }, (_, i) => {
+    const frac = i / yTicks;
+    return { y: padT + plotH - frac * plotH, val: normalize ? frac : forecast.maxRate * frac };
+  });
+
+  // X 刻度：每隔几周标一个日期（直接用今天 + w*7 天算，避免依赖每日采样数组下标）
+  const tickStep = Math.max(1, Math.round(horizon / 8));
+  const xTicks: { w: number; label: string }[] = [];
+  for (let w = 0; w <= horizon; w += tickStep) {
+    const d = new Date(Date.now() + w * 7 * 86400000);
+    xTicks.push({ w, label: `${d.getMonth() + 1}/${d.getDate()}` });
+  }
+
+  const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * W;
+    if (x < padL || x > padL + plotW) { setHoverDay(null); return; }
+    const frac = (x - padL) / plotW;
+    setHoverDay(Math.max(0, Math.min(horizonDays, Math.round(frac * horizonDays))));
+  };
+
+  const visible = forecast.series.filter((s) => !hidden.has(s.groupId));
+  const tipRows = hoverDay != null
+    ? seriesPaths.map(({ s, dots }) => ({ s, v: dots[hoverDay].rate })).sort((a, b) => b.v - a.v)
+    : [];
+
+  const toggleStyle = (active: boolean): React.CSSProperties => ({
+    padding: '4px 10px', borderRadius: 8, fontSize: 11, cursor: 'pointer',
+    border: '1px solid ' + (active ? C.accent : C.border),
+    background: active ? C.accent + '22' : 'transparent', color: active ? C.accentLt : C.textSec,
+  });
+
+  const rowH = 14, boxW = 178;
+  const boxX = hoverDay != null ? Math.min(W - padR - boxW, Math.max(padL, xAt(hoverDay) + 10)) : 0;
+  const boxY = padT + 6;
+  const bandFill = (kind: 'hot' | 'cold' | 'normal') => (kind === 'hot' ? '#4ade80' : kind === 'cold' ? '#f87171' : null);
+  // 悬停高亮：只完整显示当前线，其余线变淡
+  const [hoverGroupId, setHoverGroupId] = useState<string | null>(null);
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 12, color: C.textSec }}>纵轴：预测次/天（从今天起 {horizonDays} 天）</span>
+        <button onClick={() => setNormalize((v) => !v)} style={toggleStyle(normalize)}>
+          {normalize ? '相对自身峰值（看起伏形状）' : '统一刻度（看量级）'}
+        </button>
+      </div>
+
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        style={{ width: '100%', height: 'auto', background: C.surface, borderRadius: 14, border: '1px solid ' + C.border, cursor: 'crosshair' }}
+        onMouseMove={onMove}
+        onMouseLeave={() => setHoverDay(null)}
+      >
+        {/* 横向网格 + Y 轴标签 */}
+        {yGrid.map((g, i) => (
+          <g key={i}>
+            <line x1={padL} y1={g.y} x2={W - padR} y2={g.y} stroke={C.border} strokeWidth={1} strokeDasharray="3 4" opacity={0.25} />
+            <text x={padL - 6} y={g.y + 3} textAnchor="end" fontSize={10} fill={C.textDim}>
+              {normalize ? g.val.toFixed(2) : g.val.toFixed(1)}
+            </text>
+          </g>
+        ))}
+
+        {/* X 刻度（日期）：只在关键周标，避免过密 */}
+        {xTicks.map((tk, i) => (
+          <g key={i}>
+            <line x1={xAt(tk.w * 7)} y1={padT} x2={xAt(tk.w * 7)} y2={padT + plotH} stroke={C.border} strokeWidth={1} strokeDasharray="2 4" opacity={0.35} />
+            <text x={xAt(tk.w * 7)} y={H - 8} textAnchor="middle" fontSize={10} fill={C.textDim}>{tk.label}</text>
+          </g>
+        ))}
+
+        {/* 今天标记（左边缘 = 第 0 周） */}
+        <line x1={padL} y1={padT} x2={padL} y2={padT + plotH} stroke={C.accentLt} strokeWidth={1.2} strokeDasharray="4 3" opacity={0.6} />
+        <text x={padL + 4} y={padT - 3} fontSize={10} fill={C.accentLt}>今天</text>
+
+        {/* 平滑预测曲线：7 天移动平均 + Catmull-Rom 样条；悬停时高亮当前线，其余线淡化 */}
+        {visible.map((s) => {
+          const oi = forecast.series.indexOf(s);
+          const { mean } = buildPath(s);
+          const col = colorOf(s, oi);
+          const isDim = hoverGroupId != null && hoverGroupId !== s.groupId;
+          return (
+            <g key={s.groupId}
+               onMouseEnter={() => setHoverGroupId(s.groupId)}
+               onMouseLeave={() => setHoverGroupId(null)}
+               style={{ pointerEvents: 'all' }}
+            >
+              {/* invisible 更宽的热区，便于悬停 */}
+              <path d={mean} fill="none" stroke="transparent" strokeWidth={12} strokeLinejoin="round" strokeLinecap="round" />
+              <path d={mean} fill="none" stroke={col} strokeWidth={1.4} strokeLinejoin="round" strokeLinecap="round" opacity={isDim ? 0.12 : 0.9} />
+            </g>
+          );
+        })}
+
+        {/* 悬停竖向引导线 + 数据点 */}
+        {hoverDay != null && (() => {
+          const x = xAt(hoverDay);
+          return (
+            <g>
+              <line x1={x} y1={padT} x2={x} y2={padT + plotH} stroke={C.textSec} strokeWidth={1} opacity={0.5} />
+              {seriesPaths.map(({ s, dots }) => {
+                const y = dots[hoverDay].y;
+                return <circle key={s.groupId} cx={x} cy={y} r={3} fill={colorOf(s, forecast.series.indexOf(s))} stroke={C.surface} strokeWidth={1.5} />;
+              })}
+            </g>
+          );
+        })()}
+
+        {/* 悬停浮窗 */}
+        {hoverDay != null && tipRows.length > 0 && (() => {
+          const date = new Date(Date.now() + hoverDay * 86400000);
+          const boxH = 8 + 16 + tipRows.length * rowH;
+          const title = date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
+          const dtLabel = seriesPaths[0]?.s.forecast[hoverDay]?.dayType;
+          const dtText = dtLabel === 'holiday' ? '节假日' : dtLabel === 'weekend' ? '周末' : '工作日';
+          return (
+            <g>
+              <rect x={boxX} y={boxY} width={boxW} height={boxH} rx={8} fill={C.card} stroke={C.borderLit} opacity={0.97} />
+              <text x={boxX + 10} y={boxY + 16} fontSize={10} fill={C.textSec}>{title} · 第 {hoverDay} 天 · {dtText}</text>
+              {tipRows.map((r, i) => (
+                <g key={r.s.groupId}>
+                  <circle cx={boxX + 14} cy={boxY + 30 + i * rowH} r={3} fill={colorOf(r.s, forecast.series.indexOf(r.s))} />
+                  <text x={boxX + 24} y={boxY + 34 + i * rowH} fontSize={10} fill={C.text}>{r.s.icon} {r.s.name}</text>
+                  <text x={boxX + boxW - 10} y={boxY + 34 + i * rowH} fontSize={10} fill={C.text} textAnchor="end">{r.v.toFixed(2)} 次/天</text>
+                </g>
+              ))}
+            </g>
+          );
+        })()}
+      </svg>
+
+      {/* 图例（点击可隐藏/显示单条曲线；悬停高亮对应曲线） */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+        {forecast.series.map((s, i) => {
+          const off = hidden.has(s.groupId);
+          const col = colorOf(s, i);
+          const isDim = hoverGroupId != null && hoverGroupId !== s.groupId;
+          return (
+            <button
+              key={s.groupId}
+              onClick={() => { const h = new Set(hidden); if (h.has(s.groupId)) h.delete(s.groupId); else h.add(s.groupId); setHidden(h); }}
+              onMouseEnter={() => setHoverGroupId(s.groupId)}
+              onMouseLeave={() => setHoverGroupId(null)}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 20, fontSize: 11, cursor: 'pointer', opacity: (off || isDim) ? 0.45 : 1, background: off ? 'transparent' : col + '22', border: '1px solid ' + (off ? C.border : col), color: off ? C.textDim : C.text }}
+            >
+              <span style={{ width: 9, height: 9, borderRadius: '50%', background: col, display: 'inline-block' }} />
+              {s.icon} {s.name}
+            </button>
+          );
+        })}
+      </div>
+
+      <p style={{ fontSize: 11, color: C.textDim, marginTop: 8 }}>
+        按历史「工作日 / 周末 / 节假日」各自频次加权外推未来 {horizonDays} 天；先 7 天移动平均降噪，再用 Catmull-Rom 样条连成平滑曲线。悬停看某天类型与各线预测次/天。
+      </p>
     </div>
   );
 }

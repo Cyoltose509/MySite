@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
-import { isAuthenticated } from '@/lib/auth';
+import { isAuthenticated, getSession } from '@/lib/auth';
+import { usePrivateAccess } from '@/lib/private';
 import { withBasePath } from '@/lib/base-path';
 import { MOOD_EMOJIS, MOOD_SCORE_LABELS } from '@/lib/types';
 import { C, pageStyle, headerStyle, h1Style, backLinkStyle, loadingContainerStyle, spinnerStyle, loadingTextStyle } from '@/lib/card-styles';
@@ -39,11 +40,12 @@ export default function DashboardPage() {
   const [mealCount, setMealCount] = useState(0);
   const [sleepAvg, setSleepAvg] = useState('--');
   const [loading, setLoading] = useState(true);
+  const { unlocked, refreshKey } = usePrivateAccess();
 
   useEffect(() => {
     setIsLoggedIn(isAuthenticated());
     fetchData();
-  }, []);
+  }, [refreshKey]);
 
   const fetchData = async () => {
     setLoading(true);
@@ -51,25 +53,63 @@ export default function DashboardPage() {
 
     // 心情动态 - 最近3天
     const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
-    let moodQ = supabase.from('mood_logs').select('*').order('created_at', { ascending: false }).gte('created_at', threeDaysAgo);
-    if (!loggedIn) moodQ = moodQ.eq('visibility', 'public');
+    let recentMoods: MoodLog[] = [];
+    if (unlocked) {
+      // 解锁后通过管理 RPC 拉取全部心情（含私密）
+      const hash = getSession();
+      if (hash) {
+        const { data: priv } = await supabase.rpc('fn_get_mood_logs_admin', { p_hash: hash });
+        if (priv && Array.isArray(priv)) {
+          recentMoods = (priv as Array<Record<string, unknown>>)
+            .filter((m) => new Date(m.created_at as string) >= new Date(threeDaysAgo))
+            .map((m) => ({
+              id: m.id as string,
+              mood: (m.mood as string) || '',
+              note: (m.note as string) || undefined,
+              mood_score: (m.mood_score as number) || undefined,
+              created_at: m.created_at as string,
+              visibility: m.visibility as string,
+            }));
+        }
+      }
+    }
+    if (!recentMoods.length) {
+      let moodQ = supabase.from('mood_logs').select('*').order('created_at', { ascending: false }).gte('created_at', threeDaysAgo);
+      if (!loggedIn) moodQ = moodQ.eq('visibility', 'public');
+      const { data } = await moodQ;
+      recentMoods = (data || []) as MoodLog[];
+    }
+    setRecentMoods(recentMoods);
 
     // 事件组
     const { data: gData } = await supabase
       .from('event_groups')
       .select('*')
       .order('sort_order', { ascending: true });
+    const visibleGroups = (gData || []).filter((g) => unlocked || !g.is_private);
 
-    // 查询每个事件组的计数
+    // 解锁后一次性拉取全部日志以计算真实计数（含私密组）；否则逐组查公开计数
+    let allLogs: Array<{ group_id: string }> = [];
+    if (unlocked) {
+      const hash = getSession();
+      if (hash) {
+        const { data: priv } = await supabase.rpc('fn_get_event_logs_admin', { p_hash: hash });
+        if (priv && Array.isArray(priv)) allLogs = priv as Array<{ group_id: string }>;
+      }
+    }
     const groupsWithCount: EventGroup[] = [];
-    if (gData) {
-      for (const g of gData) {
-        const { count } = await supabase
+    for (const g of visibleGroups) {
+      let count = 0;
+      if (unlocked && allLogs.length) {
+        count = allLogs.filter((l) => l.group_id === g.id).length;
+      } else {
+        const { count: c } = await supabase
           .from('event_logs')
           .select('*', { count: 'exact', head: true })
           .eq('group_id', g.id);
-        groupsWithCount.push({ ...g, count: count || 0 });
+        count = c || 0;
       }
+      groupsWithCount.push({ ...g, count });
     }
 
     // 番剧总数
@@ -103,7 +143,6 @@ export default function DashboardPage() {
       avgHours = `${Math.floor(avgMin / 60)}h${avgMin % 60 ? `${avgMin % 60}m` : ''}`;
     }
 
-    const { data: moodData } = await moodQ.limit(8);
     // 今日睡眠 — 取最近 48h 数据，选最近一天北京时间的记录
     const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
     const { data: sleepData2 } = await supabase
@@ -113,7 +152,6 @@ export default function DashboardPage() {
       .order('start_date', { ascending: true });
 
     setEventGroups(groupsWithCount);
-    setRecentMoods(moodData || []);
     // 只显示最近一天的睡眠
     const days = groupByDay(sleepData2 || []);
     const latestDay = days[days.length - 1];

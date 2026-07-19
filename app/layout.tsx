@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import PrivateBridge from '@/components/PrivateBridge';
 
 export async function generateMetadata(): Promise<Metadata> {
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
@@ -27,6 +28,7 @@ export default function RootLayout({
         WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale', lineHeight: 1.6,
       }}>
         {children}
+        <PrivateBridge />
       </body>
     </html>
   );

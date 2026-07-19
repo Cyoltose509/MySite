@@ -116,7 +116,7 @@ export function MusicTagEditor() {
     const sortedList = useMemo(() => {
         const q = search.toLowerCase();
         const filtered = search.trim()
-            ? musicList.filter(m => m.title.toLowerCase().includes(q) || (m.artist || []).join(' / ').toLowerCase().includes(q))
+            ? musicList.filter(m => getQuickSearchIndex(m.title.toLowerCase()).includes(q) || getQuickSearchIndex((m.artist || []).join(' / ').toLowerCase()).includes(q))
             : musicList;
         return [...filtered.filter(m => !tagsMap[m.id]?.[0]?.voice), ...filtered.filter(m => tagsMap[m.id]?.[0]?.voice)];
     }, [musicList, search, tagsMap]);

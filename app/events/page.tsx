@@ -3,6 +3,8 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
+import { getSession } from '@/lib/auth';
+import { usePrivateAccess } from '@/lib/private';
 import { C, pageStyle, headerStyle, h1Style, backLinkStyle, emptyStyle, loadingContainerStyle, spinnerStyle, loadingTextStyle } from '@/lib/card-styles';
 import { TIME_SCALES, type TimeScale } from '@/lib/types';
 
@@ -31,17 +33,39 @@ export default function EventsPage() {
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [chartW, setChartW] = useState(900);
+  const { unlocked, refreshKey } = usePrivateAccess();
 
-  useEffect(() => { fetchData(); }, []);
+  useEffect(() => { fetchData(); }, [refreshKey]);
 
   const fetchData = async () => {
     setLoading(true);
     const { data: gData } = await supabase.from('event_groups').select('*').order('sort_order');
-    const gs = (gData || []) as EventGroup[];
+    const gs = (gData || []).filter((g) => unlocked || !g.is_private) as EventGroup[];
     setGroups(gs);
     setVisibleGroups(new Set(gs.map(g => g.id)));
-    const { data: eData } = await supabase.from('event_logs').select('id, group_id, event_at, note, refs').order('event_at').limit(5000);
-    setRawEvents((eData || []) as RawEvent[]);
+
+    // 默认只取公开日志（RLS 已屏蔽私密组）；解锁后改用管理 RPC 拉取全部（含私密）
+    let events: RawEvent[] = [];
+    if (unlocked) {
+      const hash = getSession();
+      if (hash) {
+        const { data: priv } = await supabase.rpc('fn_get_event_logs_admin', { p_hash: hash });
+        if (priv && Array.isArray(priv)) {
+          events = (priv as Array<Record<string, unknown>>).map((r) => ({
+            id: r.id as string,
+            group_id: r.group_id as string,
+            event_at: r.event_at as string,
+            note: (r.note as string) || undefined,
+            refs: (r.refs as { id: string; title: string }[]) || undefined,
+          }));
+        }
+      }
+    }
+    if (!events.length) {
+      const { data: eData } = await supabase.from('event_logs').select('id, group_id, event_at, note, refs').order('event_at').limit(5000);
+      events = (eData || []) as RawEvent[];
+    }
+    setRawEvents(events);
     setLoading(false);
     setTimeout(() => setAnimReady(true), 100);
   };

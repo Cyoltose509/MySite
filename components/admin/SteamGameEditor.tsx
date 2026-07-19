@@ -91,7 +91,7 @@ export function SteamGameEditor() {
 
   const sorted = useMemo(() => {
     const q = search.toLowerCase();
-    let list = search.trim() ? games.filter(g => g.title.toLowerCase().includes(q)) : games;
+    let list = search.trim() ? games.filter(g => getQuickSearchIndex(g.title.toLowerCase()).includes(q)) : games;
     return list.sort((a, b) => {
       const ta = tagsMap[a.id]?.[0];
       const tb = tagsMap[b.id]?.[0];

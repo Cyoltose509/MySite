@@ -83,7 +83,7 @@ export default function MusicPage() {
     if (typeof window === 'undefined') return;
     const q = new URLSearchParams(window.location.search).get('search');
     if (!q) return;
-    const match = musicList.find(m => m.title.toLowerCase().includes(q.toLowerCase()));
+    const match = musicList.find(m => getQuickSearchIndex((m.title + ' ' + (m.artist || []).join(' / ')).toLowerCase()).includes(q.toLowerCase()));
     if (match) { setDetailMusic(match); setSearch(q); }
   }, [musicList]);
 

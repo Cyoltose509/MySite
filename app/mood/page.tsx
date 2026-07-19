@@ -3,7 +3,8 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
-import { isAuthenticated } from '@/lib/auth';
+import { isAuthenticated, getSession } from '@/lib/auth';
+import { usePrivateAccess } from '@/lib/private';
 import { MOOD_SCORE_LABELS, MOOD_EMOJIS, TIME_SCALES, type TimeScale } from '@/lib/types';
 import { C } from '@/lib/card-styles';
 
@@ -30,14 +31,34 @@ export default function MoodPage() {
   const [scale, setScale] = useState<TimeScale>('daily');
   const [tooltip, setTooltip] = useState<{ x: number; y: number; idx: number } | null>(null);
   const chartRef = useRef<HTMLDivElement>(null);
+  const { unlocked, refreshKey } = usePrivateAccess();
 
-  useEffect(() => { fetchLogs(); }, []);
+  useEffect(() => { fetchLogs(); }, [refreshKey]);
 
   const fetchLogs = async () => {
-    // Always fetch all records; RLS policy allows it.
-    // Client-side auth check controls visibility display.
-    const { data } = await supabase.from('mood_logs').select('*').order('created_at', { ascending: true }).limit(500);
-    const all = data || [];
+    let all: MoodLog[] = [];
+    if (unlocked) {
+      // 解锁后通过管理 RPC 拉取全部心情（含私密）
+      const hash = getSession();
+      if (hash) {
+        const { data: priv } = await supabase.rpc('fn_get_mood_logs_admin', { p_hash: hash });
+        if (priv && Array.isArray(priv)) {
+          all = (priv as Array<Record<string, unknown>>).map((m) => ({
+            id: m.id as string,
+            mood: (m.mood as string) || '',
+            note: (m.note as string) || undefined,
+            mood_score: (m.mood_score as number) || undefined,
+            visibility: (m.visibility as 'public' | 'private') || 'public',
+            created_at: m.created_at as string,
+          }));
+        }
+      }
+    }
+    if (!all.length) {
+      // 未解锁：RLS 仅返回公开心情
+      const { data } = await supabase.from('mood_logs').select('*').order('created_at', { ascending: true }).limit(500);
+      all = (data || []) as MoodLog[];
+    }
     setLogs(all);
     setLoading(false);
   };
@@ -62,7 +83,7 @@ export default function MoodPage() {
       const key = String(alignDown(new Date(l.created_at).getTime()));
       if (!groups[key]) groups[key] = { scores: [], notes: [] };
       groups[key].scores.push(l.mood_score);
-      if (l.note && l.visibility !== 'private') groups[key].notes.push(l.note);
+      if (l.note && (l.visibility !== 'private' || unlocked)) groups[key].notes.push(l.note);
     }
 
     return Object.keys(groups).sort().map(key => ({
@@ -219,7 +240,7 @@ export default function MoodPage() {
       <div style={{ marginTop: 8 }}>
         <h3 style={{ fontSize: 15, fontWeight: 600, color: '#e4e4e7', margin: '0 0 14px' }}>最近记录</h3>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {logs.filter(l => l.visibility !== 'private').slice(-20).reverse().map(log => (
+          {logs.filter(l => unlocked || l.visibility !== 'private').slice(-20).reverse().map(log => (
             <div key={log.id} style={S.logRow}>
               <span style={{ fontSize: 20, minWidth: 30, textAlign: 'center' }}>{MOOD_EMOJIS[(log.mood_score || 6) - 1]}</span>
               <span style={{ fontSize: 13, fontWeight: 600, color: '#e4e4e7' }}>{log.mood_score}/10 {MOOD_SCORE_LABELS[log.mood_score || 6] || ''}</span>

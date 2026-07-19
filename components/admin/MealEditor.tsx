@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { getSession } from '@/lib/auth';
 import { C, searchInputStyle } from '@/lib/card-styles';
+import { getQuickSearchIndex } from '@/lib/search';
 
 interface MealRecord { id: string; title: string; rating: string; }
 interface MealTag { id?: string; meal_id: string; tag: string; note?: string; }
@@ -105,7 +106,7 @@ export function MealEditor() {
   const filtered = useMemo(() => {
     if (!search.trim()) return meals;
     const q = search.toLowerCase();
-    return meals.filter(m => m.title.toLowerCase().includes(q));
+    return meals.filter(m => getQuickSearchIndex(m.title.toLowerCase()).includes(q));
   }, [meals, search]);
 
   const selected = meals.find(m => m.id === selectedId);

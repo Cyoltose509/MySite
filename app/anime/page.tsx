@@ -53,7 +53,7 @@ export default function AnimePage() {
     if (!animeList.length) return;
     const q = new URLSearchParams(window.location.search).get('search');
     if (!q) return;
-    const match = animeList.find(a => a.title.toLowerCase().includes(q.toLowerCase()));
+    const match = animeList.find(a => getQuickSearchIndex((a.title + ' ' + (a.tags || []).join(' ')).toLowerCase()).includes(q.toLowerCase()));
     if (match) {
       setDetailAnime(match);
       setSearch(q); // pre-fill search box
