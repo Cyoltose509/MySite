@@ -12,8 +12,10 @@ import { EventCounter } from '@/components/admin/EventCounter';
 
 import { MealEditor } from '@/components/admin/MealEditor';
 import { LocationEditor } from '@/components/admin/LocationEditor';
+import { PeopleEditor } from '@/components/admin/PeopleEditor';
+import { PeopleGraphEditor } from '@/components/admin/PeopleGraphEditor';
 
-type TabId = 'sync' | 'music' | 'games' | 'meals' | 'mood' | 'events' | 'location';
+type TabId = 'sync' | 'music' | 'games' | 'meals' | 'mood' | 'events' | 'location' | 'people';
 
 const TABS: { id: TabId; label: string; icon: string }[] = [
   { id: 'sync', label: '数据同步', icon: '🔄' },
@@ -23,12 +25,14 @@ const TABS: { id: TabId; label: string; icon: string }[] = [
   { id: 'mood', label: '心情记录', icon: '🧠' },
   { id: 'events', label: '事件计数', icon: '📅' },
   { id: 'location', label: '位置停留', icon: '📍' },
+  { id: 'people', label: '人物总览', icon: '👤' },
 ];
 
 export default function AdminPage() {
   const [auth, setAuth] = useState(false);
   const [checking, setChecking] = useState(true);
   const [activeTab, setActiveTab] = useState<TabId>('sync');
+  const [peopleView, setPeopleView] = useState<'table' | 'graph'>('table');
   const router = useRouter();
 
   useEffect(() => {
@@ -98,6 +102,21 @@ export default function AdminPage() {
         {activeTab === 'mood' && <MoodLogger />}
         {activeTab === 'events' && <EventCounter />}
         {activeTab === 'location' && <LocationEditor />}
+        {activeTab === 'people' && (
+          <div>
+            <div style={styles.subNav}>
+              <button onClick={() => setPeopleView('table')}
+                style={{ ...styles.subBtn, ...(peopleView === 'table' ? styles.subBtnActive : {}) }}>
+                📋 表格总览
+              </button>
+              <button onClick={() => setPeopleView('graph')}
+                style={{ ...styles.subBtn, ...(peopleView === 'graph' ? styles.subBtnActive : {}) }}>
+                🕸️ 关系图谱
+              </button>
+            </div>
+            {peopleView === 'table' ? <PeopleEditor /> : <PeopleGraphEditor />}
+          </div>
+        )}
       </main>
     </div>
   );
@@ -138,3 +157,9 @@ S.tabBtn = {
 S.tabActive = { color: '#fff', background: '#16162a' };
 S.tabIcon = { fontSize: 16 };
 S.content = { padding: '24px 28px', maxWidth: 1200, margin: '0 auto' };
+S.subNav = { display: 'flex', gap: 6, marginBottom: 16 };
+S.subBtn = {
+  display: 'flex', alignItems: 'center', gap: 6, padding: '7px 16px', borderRadius: 9, border: '1px solid #27273d',
+  background: 'transparent', color: '#71717a', cursor: 'pointer', fontSize: 13, fontWeight: 500, transition: 'all 0.15s',
+};
+S.subBtnActive = { color: '#fff', background: '#16162a', borderColor: '#3a3a5a' };
