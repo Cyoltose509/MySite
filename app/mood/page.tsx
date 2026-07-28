@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
-import { isAuthenticated, getSession } from '@/lib/auth';
+import { isAuthenticated, getPrivateSession } from '@/lib/auth';
 import { usePrivateAccess } from '@/lib/private';
 import { MOOD_SCORE_LABELS, MOOD_EMOJIS, TIME_SCALES, type TimeScale } from '@/lib/types';
 import { C } from '@/lib/card-styles';
@@ -39,7 +39,7 @@ export default function MoodPage() {
     let all: MoodLog[] = [];
     if (unlocked) {
       // 解锁后通过管理 RPC 拉取全部心情（含私密）
-      const hash = getSession();
+      const hash = getPrivateSession();
       if (hash) {
         const { data: priv } = await supabase.rpc('fn_get_mood_logs_admin', { p_hash: hash });
         if (priv && Array.isArray(priv)) {

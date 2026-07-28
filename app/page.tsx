@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
-import { isAuthenticated, getSession } from '@/lib/auth';
+import { isAuthenticated, getPrivateSession } from '@/lib/auth';
 import { usePrivateAccess } from '@/lib/private';
 import { withBasePath } from '@/lib/base-path';
 import { MOOD_EMOJIS, MOOD_SCORE_LABELS } from '@/lib/types';
@@ -56,7 +56,7 @@ export default function DashboardPage() {
     let recentMoods: MoodLog[] = [];
     if (unlocked) {
       // 解锁后通过管理 RPC 拉取全部心情（含私密）
-      const hash = getSession();
+      const hash = getPrivateSession();
       if (hash) {
         const { data: priv } = await supabase.rpc('fn_get_mood_logs_admin', { p_hash: hash });
         if (priv && Array.isArray(priv)) {
@@ -84,7 +84,7 @@ export default function DashboardPage() {
     // 事件组：解锁后走 admin RPC 拿全部（含私密），否则公开查
     let visibleGroups: EventGroup[] = [];
     if (unlocked) {
-      const gHash = getSession();
+      const gHash = getPrivateSession();
       if (gHash) {
         const { data: privGroups } = await supabase.rpc('fn_get_event_groups_admin', { p_hash: gHash });
         if (privGroups && Array.isArray(privGroups)) {
@@ -110,7 +110,7 @@ export default function DashboardPage() {
     // 解锁后一次性拉取全部日志以计算真实计数（含私密组）；否则逐组查公开计数
     let allLogs: Array<{ group_id: string }> = [];
     if (unlocked) {
-      const hash = getSession();
+      const hash = getPrivateSession();
       if (hash) {
         const { data: priv } = await supabase.rpc('fn_get_event_logs_admin', { p_hash: hash });
         if (priv && Array.isArray(priv)) allLogs = priv as Array<{ group_id: string }>;
@@ -224,6 +224,12 @@ export default function DashboardPage() {
           border: '1px solid ' + C.accent, background: C.surface,
           color: C.accentLt, textDecoration: 'none', fontWeight: 600,
         }}>🔮 预测中心</Link>
+        <Link href="/location" style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6,
+          padding: '8px 16px', borderRadius: 12, fontSize: 13,
+          border: '1px solid ' + C.border, background: C.surface,
+          color: C.textSec, textDecoration: 'none', fontWeight: 600,
+        }}>📍 位置分布</Link>
       </nav>
 
       {/* 数据概览 - 番剧 & 音乐 & 睡眠统计卡片 */}

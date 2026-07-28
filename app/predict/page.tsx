@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
-import { getSession } from '@/lib/auth';
+import { getPrivateSession } from '@/lib/auth';
 import { usePrivateAccess } from '@/lib/private';
 import {
   C, pageStyle, headerStyle, h1Style, backLinkStyle, emptyStyle,
@@ -18,6 +18,8 @@ import {
   type EventLogLite, type EventGroupLite, type EntityRank, type MarkovItem, type GroupDep,
   type MoodPoint, type SleepPoint, type ForecastSeries, type ForecastResult,
 } from '@/lib/prediction';
+import { currentTag, tagAt, locationTagActivityProfile, predictLocationTransition, forecastLocationState, logsForTag, type LocStay, type LocTagStay, type LocationTransitionResult, type LocationStateForecast } from '@/lib/location-predict';
+import { tagMeta } from '@/lib/location-place';
 
 interface MusicLite { id: string; title: string; artist: string[]; created_at?: string; }
 interface MusicTagLite { music_id: string; singability?: number; likability?: number; }
@@ -36,6 +38,8 @@ export default function PredictPage() {
   const [songTopNInput, setSongTopNInput] = useState('10');
   const [moodData, setMoodData] = useState<MoodPoint[]>([]);
   const [sleepData, setSleepData] = useState<SleepPoint[]>([]);
+  const [locationStays, setLocationStays] = useState<LocStay[]>([]);
+  const [tagStays, setTagStays] = useState<LocTagStay[]>([]);
   const [loading, setLoading] = useState(true);
   const { unlocked, refreshKey } = usePrivateAccess();
 
@@ -50,7 +54,7 @@ export default function PredictPage() {
 
     let groupsData: EventGroupLite[] = [];
     if (unlocked) {
-      const gHash = getSession();
+      const gHash = getPrivateSession();
       if (gHash) {
         const { data: privGroups } = await supabase.rpc('fn_get_event_groups_admin', { p_hash: gHash });
         if (privGroups && Array.isArray(privGroups)) groupsData = privGroups as EventGroupLite[];
@@ -74,7 +78,7 @@ export default function PredictPage() {
 
     let mergedLogs = (lData || []) as EventLogLite[];
     if (unlocked) {
-      const hash = getSession();
+      const hash = getPrivateSession();
       if (hash) {
         const { data: priv } = await supabase.rpc('fn_get_event_logs_admin', { p_hash: hash });
         if (priv && Array.isArray(priv)) {
@@ -108,6 +112,43 @@ export default function PredictPage() {
 
     setMoodData((moodData || []) as MoodPoint[]);
     setSleepData((sleepData || []) as SleepPoint[]);
+
+    // 公开标签时段（不含城市）：始终拉取，用于公开标签规律
+    const { data: tag } = await supabase.rpc('fn_get_location_tag_stays');
+    if (tag && Array.isArray(tag)) {
+      setTagStays(
+        (tag as Array<Record<string, unknown>>).map((r) => ({
+          started_at: r.started_at as string,
+          ended_at: (r.ended_at as string) ?? null,
+          tag: (r.tag as string) || '其他',
+        })) as LocTagStay[]
+      );
+    } else {
+      setTagStays([]);
+    }
+
+    // 位置数据（私密）：解锁后拉取，用于「位置规律」联动
+    if (unlocked) {
+      const lHash = getPrivateSession();
+      if (lHash) {
+        const { data: loc } = await supabase.rpc('fn_get_location_stays', { p_hash: lHash });
+        if (loc && Array.isArray(loc)) {
+          setLocationStays(
+            (loc as Array<Record<string, unknown>>).map((r) => ({
+              id: r.id as string,
+              started_at: r.started_at as string,
+              ended_at: (r.ended_at as string) ?? null,
+              country: (r.country as string) || '中国',
+              province: (r.province as string) ?? null,
+              city: (r.city as string) ?? null,
+              tag: (r.tag as string) || '其他',
+            })) as LocStay[]
+          );
+        }
+      }
+    } else {
+      setLocationStays([]);
+    }
 
     setLoading(false);
   };
@@ -209,6 +250,76 @@ export default function PredictPage() {
     [songGroup, songLogs]
   );
 
+  // ── 公开标签规律（不含城市）──
+  const currentTagCtx = useMemo(() => currentTag(tagStays), [tagStays]);
+  const tagProfile = useMemo(
+    () => locationTagActivityProfile(rawLogs, tagStays, groups),
+    [rawLogs, tagStays, groups]
+  );
+  // 当前标签条件下的事件日志（仅取在该标签时段发生的）
+  const songLogsByTag = useMemo(
+    () => (currentTagCtx
+      ? songLogs.filter((l) => tagAt(new Date(l.event_at).getTime(), tagStays)?.tag === currentTagCtx.tag)
+      : []),
+    [songLogs, currentTagCtx, tagStays]
+  );
+  const mealLogsByTag = useMemo(
+    () => (currentTagCtx && mealGroup
+      ? (logsByGroup[mealGroup.id] || []).filter((l) => tagAt(new Date(l.event_at).getTime(), tagStays)?.tag === currentTagCtx.tag)
+      : []),
+    [mealGroup, logsByGroup, currentTagCtx, tagStays]
+  );
+  // 标签预测：≥3 次活动才用本地规律；旅游标签随机性强，直接回退整体
+  const isTagRandom = currentTagCtx?.tag === '旅游';
+  const songPredTag = useMemo(
+    () => (currentTagCtx && !isTagRandom && songLogsByTag.length >= 3
+      ? predictNextEntityMarkov(songLogsByTag, { prefScore: songPref, freshScore: songFresh, coldCandidates: songColdCandidates, mode: 'membership' })
+      : null),
+    [currentTagCtx, isTagRandom, songLogsByTag, songPref, songFresh, songColdCandidates]
+  );
+  const mealPredTag = useMemo(
+    () => (currentTagCtx && !isTagRandom && mealLogsByTag.length >= 3 && mealGroup
+      ? predictNextEntityMarkov(mealLogsByTag, { prefScore: mealPref })
+      : null),
+    [currentTagCtx, isTagRandom, mealLogsByTag, mealGroup, mealPref, mealById]
+  );
+
+  // ── 位置变动规律（标签级公开 / 地点级私密）──
+  const locTrans = useMemo<LocationTransitionResult | null>(() => {
+    if (!tagStays.length) return null;
+    return predictLocationTransition(tagStays, unlocked ? locationStays : null);
+  }, [tagStays, locationStays, unlocked]);
+  const locState = useMemo<LocationStateForecast | null>(() => (locTrans ? forecastLocationState(locTrans, 16) : null), [locTrans]);
+  // 各事件组 × 各标签 的节奏（分地点讨论）
+  const locTags = useMemo(() => tagProfile.map((p) => p.tag), [tagProfile]);
+  const timingByTag = useMemo(() => {
+    const m: Record<string, Record<string, ReturnType<typeof computeTiming>>> = {};
+    for (const g of groups) {
+      const lg = logsByGroup[g.id];
+      if (!lg || lg.length < 2) continue;
+      const mm: Record<string, ReturnType<typeof computeTiming>> = {};
+      for (const tag of locTags) {
+        const sub = logsForTag(lg, tagStays, tag);
+        if (sub.length >= 2) mm[tag] = computeTiming(sub);
+      }
+      if (Object.keys(mm).length) m[g.id] = mm;
+    }
+    return m;
+  }, [groups, logsByGroup, tagStays, locTags]);
+  // 跨域联动用的「位置偏向」：每个事件组最具代表性的地点（lift 最高）
+  const groupLiftByTag = useMemo(() => {
+    const m: Record<string, { tag: string; lift: number } | null> = {};
+    for (const p of tagProfile) {
+      for (const a of p.activities) {
+        if (a.lift > 1.15) {
+          const cur = m[a.groupId];
+          if (!cur || a.lift > cur.lift) m[a.groupId] = { tag: p.tag, lift: a.lift };
+        }
+      }
+    }
+    return m;
+  }, [tagProfile]);
+
   const deps = useMemo(() => computeGroupDependencies(groups, logsByGroup, 2), [groups, logsByGroup]);
 
   // 高级预测：每日特征 + 跨域联动 + 场景motif + 习惯漂移 + 日常原型聚类
@@ -279,6 +390,51 @@ export default function PredictPage() {
         </div>
       )}
 
+      {/* ── 位置变动预测（状态序列 Markov 转移） ── */}
+      <Section title="📍 位置变动预测">
+        {!locTrans || !locTrans.current ? (
+          <p style={emptyStyle}>还没有位置记录，去 /admin 记录停留段后，这里会预测你下一次「换地方」的时间与去向。</p>
+        ) : (
+          <div style={{ padding: 18, borderRadius: 16, background: `linear-gradient(135deg, ${tagMeta(locTrans.current.tag).color}22, ${C.surface})`, border: '1px solid ' + C.borderLit }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 13, color: C.text }}>
+                当前 <b style={{ color: tagMeta(locTrans.current.tag).color }}>{tagMeta(locTrans.current.tag).icon} {locTrans.current.tag}</b>
+                {locTrans.current.place && unlocked && <b style={{ color: C.accentLt, marginLeft: 6 }}>{locTrans.current.place}</b>}
+                {locTrans.current.since && <span style={{ fontSize: 11, color: C.textDim, marginLeft: 6 }}>自 {fmtDate(locTrans.current.since)} 起</span>}
+              </span>
+            </div>
+            <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 14, color: C.text }}>
+                {locTrans.predictedSwitchInDays != null
+                  ? (locTrans.predictedSwitchInDays <= 0.5 ? '随时可能切换' : `约 ${Math.round(locTrans.predictedSwitchInDays)} 天后切换`)
+                  : '切换时间暂无规律'}
+              </span>
+              {locTrans.nextTag && (
+                <span style={{ fontSize: 13, color: C.text, background: C.surface, border: '1px solid ' + C.border, padding: '4px 10px', borderRadius: 10 }}>
+                  → {tagMeta(locTrans.nextTag.tag).icon} {locTrans.nextTag.tag}
+                  <b style={{ color: tagMeta(locTrans.nextTag.tag).color, marginLeft: 6 }}>{(locTrans.nextTag.prob * 100).toFixed(0)}%</b>
+                </span>
+              )}
+              {locTrans.nextPlace && unlocked && (
+                <span style={{ fontSize: 12, color: C.textSec }}>大概率去 {locTrans.nextPlace.place}</span>
+              )}
+            </div>
+            {locTrans.enough && locTrans.transitions.length > 0 && (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontSize: 11, color: C.textDim, marginBottom: 6 }}>你常这样走（转移概率）</div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {[...locTrans.transitions].sort((a, b) => b.count - a.count).slice(0, 5).map((t) => (
+                    <span key={`${t.from}->${t.to}`} style={{ fontSize: 12, color: C.text, background: C.surface, border: '1px solid ' + C.border, padding: '3px 9px', borderRadius: 8 }}>
+                      {tagMeta(t.from).icon}→{tagMeta(t.to).icon} {(t.prob * 100).toFixed(0)}%
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </Section>
+
       {/* ── 下一次大餐吃什么 ── */}
       <Section title="🍽️ 下一次大餐吃什么">
         {mealPred && mealPred.nextTop.length ? (
@@ -290,6 +446,15 @@ export default function PredictPage() {
               accent={C.gold}
               badge={`概率 ${(mealPred.nextTop[0].prob * 100).toFixed(0)}%`}
             />
+            {mealPredTag ? (
+              <div style={{ fontSize: 12, color: C.textSec, marginTop: -2, marginBottom: 12 }}>
+                📍 在{tagMeta(currentTagCtx!.tag).icon}{currentTagCtx!.tag}：本地规律最可能吃 <b style={{ color: C.text }}>{mealPredTag.nextTop[0]?.title ?? '—'}</b>
+              </div>
+            ) : currentTagCtx && (
+              <div style={{ fontSize: 12, color: C.textDim, marginTop: -2, marginBottom: 12 }}>
+                📍 在{tagMeta(currentTagCtx.tag).icon}{currentTagCtx.tag}：记录尚少或随机性高，沿用整体规律
+              </div>
+            )}
             <TimeLine timing={mealTiming} label="大餐" />
             <ProbList
               items={mealPred.nextTop.slice(0, 3)}
@@ -340,6 +505,15 @@ export default function PredictPage() {
               accent={C.purple}
               badge={songSing(songPred.nextTop[0].id) != null ? `唱 ${songSing(songPred.nextTop[0].id)}` : `${(songPred.nextTop[0].prob * 100).toFixed(0)}%`}
             />
+            {songPredTag ? (
+              <div style={{ fontSize: 12, color: C.textSec, marginTop: -2, marginBottom: 12 }}>
+                📍 在{tagMeta(currentTagCtx!.tag).icon}{currentTagCtx!.tag}：本地规律最可能唱 <b style={{ color: C.text }}>{songPredTag.nextTop[0]?.title ?? '—'}</b>
+              </div>
+            ) : currentTagCtx && (
+              <div style={{ fontSize: 12, color: C.textDim, marginTop: -2, marginBottom: 12 }}>
+                📍 在{tagMeta(currentTagCtx.tag).icon}{currentTagCtx.tag}：记录尚少或随机性高，沿用整体规律
+              </div>
+            )}
             <TimeLine timing={songTiming} label="唱K" />
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '0 0 10px' }}>
               <span style={{ fontSize: 12, color: C.textSec }}>预测首数</span>
@@ -404,37 +578,45 @@ export default function PredictPage() {
         )}
       </Section>
 
-      {/* ── 跨域联动（心情/睡眠 × 事件） ── */}
-      <Section title="🧠 跨域联动（心情 / 睡眠 × 事件）">
-        {crossDomain.hasMood || crossDomain.hasSleep ? (
+      {/* ── 跨域联动（心情/睡眠/位置 × 事件） ── */}
+      <Section title="🧠 跨域联动（心情 / 睡眠 / 位置 × 事件）">
+        {crossDomain.hasMood || crossDomain.hasSleep || tagProfile.length > 0 ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {crossDomain.byGroup.slice(0, 8).map((s) => (
-              <div key={s.groupId} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderRadius: 10, background: C.surface, border: '1px solid ' + C.border }}>
-                <span style={{ fontSize: 16 }}>{s.groupIcon}</span>
-                <span style={{ flex: 1, fontSize: 13, color: C.text }}>{s.groupName}</span>
-                {crossDomain.hasMood && (
-                  <span style={{ fontSize: 12, color: s.moodLift >= 0 ? '#4ade80' : '#f87171', width: 76, textAlign: 'right' }}>
-                    心情 {s.moodOn ? (s.moodLift >= 0 ? '+' : '') + s.moodLift.toFixed(1) : '—'}
-                  </span>
-                )}
-                {crossDomain.hasSleep && (
-                  <span style={{ fontSize: 12, color: s.sleepLiftMin >= 0 ? '#4ade80' : '#f87171', width: 80, textAlign: 'right' }}>
-                    睡眠 {s.sleepLiftMin >= 0 ? '+' : ''}{s.sleepLiftMin.toFixed(0)}′
-                  </span>
-                )}
-              </div>
-            ))}
+            {crossDomain.byGroup.slice(0, 12).map((s) => {
+              const loc = groupLiftByTag[s.groupId];
+              return (
+                <div key={s.groupId} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderRadius: 10, background: C.surface, border: '1px solid ' + C.border }}>
+                  <span style={{ fontSize: 16 }}>{s.groupIcon}</span>
+                  <span style={{ flex: 1, fontSize: 13, color: C.text }}>{s.groupName}</span>
+                  {crossDomain.hasMood && (
+                    <span style={{ fontSize: 12, color: s.moodLift >= 0 ? '#4ade80' : '#f87171', width: 76, textAlign: 'right' }}>
+                      心情 {s.moodOn ? (s.moodLift >= 0 ? '+' : '') + s.moodLift.toFixed(1) : '—'}
+                    </span>
+                  )}
+                  {crossDomain.hasSleep && (
+                    <span style={{ fontSize: 12, color: s.sleepLiftMin >= 0 ? '#4ade80' : '#f87171', width: 80, textAlign: 'right' }}>
+                      睡眠 {s.sleepLiftMin >= 0 ? '+' : ''}{s.sleepLiftMin.toFixed(0)}′
+                    </span>
+                  )}
+                  {tagProfile.length > 0 && (
+                    <span style={{ fontSize: 12, width: 96, textAlign: 'right', color: loc ? tagMeta(loc.tag).color : C.textDim }}>
+                      {loc ? `${tagMeta(loc.tag).icon}${loc.tag} ×${loc.lift.toFixed(1)}` : '位置 —'}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
             <p style={{ fontSize: 11, color: C.textDim, marginTop: 4 }}>
-              数值 = 该事件发生的日子，心情分 / 睡眠时长相对你整体基线的平均偏差（偏差越大越能说明它影响你的状态）。
+              数值 = 该事件发生的日子，心情分 / 睡眠时长相对整体基线的平均偏差；位置列 = 该事件最偏好的地点（发生频率相对基线倍数，&gt;1 即此地更常见）。
             </p>
           </div>
         ) : (
-          <p style={emptyStyle}>还没有心情 / 睡眠记录，无法做跨域联动</p>
+          <p style={emptyStyle}>还没有心情 / 睡眠 / 位置记录，无法做跨域联动</p>
         )}
       </Section>
 
-      {/* ── 习惯漂移 / 阶段起伏（预测） ── */}
-      <Section title="📉 习惯漂移 / 阶段起伏（预测）">
+      {/* ── 习惯漂移 / 阶段起伏 / 位置状态（预测） ── */}
+      <Section title="📉 习惯漂移 / 阶段起伏 / 位置状态（预测）">
         {changePoints.length ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {changePoints.map((cp) => (
@@ -451,9 +633,15 @@ export default function PredictPage() {
         ) : (
           <p style={emptyStyle}>暂未发现明显的习惯频率突变（或数据不足）</p>
         )}
+        {locState && locState.weeks.length > 1 && (
+          <>
+            <div style={{ fontSize: 12, color: C.textSec, margin: '16px 0 10px', fontWeight: 600 }}>📍 位置状态预测（未来 16 周身处各地点的概率）</div>
+            <LocationStateChart loc={locState} />
+          </>
+        )}
         {forecast.series.length > 0 && (
           <>
-            <div style={{ fontSize: 12, color: C.textSec, margin: '16px 0 10px', fontWeight: 600 }}>🔮 未来阶段起伏预测</div>
+            <div style={{ fontSize: 12, color: C.textSec, margin: '16px 0 10px', fontWeight: 600 }}>🔮 未来事件起伏预测</div>
             <ForecastChart forecast={forecast} />
           </>
         )}
@@ -604,6 +792,17 @@ export default function PredictPage() {
                         大概率区间：{fmtDate(t.band.p25)} ~ {fmtDate(t.band.p75)}
                       </div>
                     )}
+                    {timingByTag[g.id] && (() => {
+                      const items = Object.entries(timingByTag[g.id]!)
+                        .filter(([, tt]) => tt.avgIntervalDays != null)
+                        .map(([tag, tt]) => ({ tag, days: tt.avgIntervalDays! }));
+                      if (!items.length) return null;
+                      return (
+                        <div style={{ fontSize: 11, color: C.textSec, marginTop: 10 }}>
+                          📍 分地点平均间隔：{items.map((it) => `${tagMeta(it.tag).icon}${it.tag} ${it.days.toFixed(1)}天`).join(' · ')}
+                        </div>
+                      );
+                    })()}
                   </>
                 )}
               </div>
@@ -616,7 +815,8 @@ export default function PredictPage() {
         <p>模型：指数衰减加权间隔 + 星期季节性修正 + 经验分位预测区间</p>
         <p>下一个对象：一阶 Markov 转移 × 偏好评分（大餐评分 / 歌曲 喜欢度×能唱度）</p>
         <p>跨事件：日频 Pearson 相关 + 条件共现（关系图展示）</p>
-        <p>高级：跨域联动(心情/睡眠) + 生存分析(危险率) + 场景motif + 习惯漂移 + K-means日常原型 + 阶段起伏外推(未来预测)</p>
+        <p>位置：停留段一阶 Markov 转移（预测换地方时间/去向）+ 分地点事件节奏 + 位置状态外推（与事件起伏并列）</p>
+        <p>高级：跨域联动(心情/睡眠/位置) + 生存分析(危险率) + 场景motif + 习惯漂移 + K-means日常原型 + 阶段起伏外推(未来预测)</p>
         <p>Powered by DataHub</p>
       </footer>
     </div>
@@ -1147,6 +1347,112 @@ function Row({ label, value, highlight }: { label: string; value: string; highli
     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '2px 0' }}>
       <span style={{ color: C.textSec }}>{label}</span>
       <span style={{ color: highlight ? C.accentLt : C.text, fontWeight: highlight ? 700 : 400 }}>{value}</span>
+    </div>
+  );
+}
+
+/* ── 位置状态预测图：未来各周处于各地点的概率（堆叠面积） ── */
+function LocationStateChart({ loc }: { loc: LocationStateForecast }) {
+  const [hoverWeek, setHoverWeek] = useState<number | null>(null);
+  const W = 720, H = 220, padL = 38, padR = 14, padT = 12, padB = 24;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const horizon = loc.horizonWeeks;
+  const tags = Object.keys(loc.weeks[0].dist);
+  const xAt = (w: number) => padL + (w / horizon) * plotW;
+  const yAt = (frac: number) => padT + plotH - frac * plotH;
+
+  const areas = tags.map((tag, ti) => {
+    const top: { x: number; y: number }[] = [];
+    const bottom: { x: number; y: number }[] = [];
+    const lowerAt = (w: number) => {
+      let c = 0;
+      for (let i = 0; i < ti; i++) c += loc.weeks[w].dist[tags[i]] || 0;
+      return c;
+    };
+    for (let w = 0; w <= horizon; w++) {
+      const lower = lowerAt(w);
+      const upper = lower + (loc.weeks[w].dist[tag] || 0);
+      bottom.push({ x: xAt(w), y: yAt(lower) });
+      top.push({ x: xAt(w), y: yAt(upper) });
+    }
+    const pts = [...top, ...bottom.reverse()];
+    const d = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ') + ' Z';
+    return { tag, d, color: tagMeta(tag).color };
+  });
+
+  const xTicks: { w: number; label: string }[] = [];
+  const step = Math.max(1, Math.round(horizon / 8));
+  for (let w = 0; w <= horizon; w += step) {
+    const dt = new Date(Date.now() + w * 7 * 86400000);
+    xTicks.push({ w, label: `${dt.getMonth() + 1}/${dt.getDate()}` });
+  }
+
+  const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * W;
+    if (x < padL || x > padL + plotW) { setHoverWeek(null); return; }
+    const frac = (x - padL) / plotW;
+    setHoverWeek(Math.max(0, Math.min(horizon, Math.round(frac * horizon))));
+  };
+
+  const hov = hoverWeek != null ? loc.weeks[hoverWeek] : null;
+  const hovRows = hov ? tags.map((t) => ({ tag: t, p: hov.dist[t] || 0 })).sort((a, b) => b.p - a.p) : [];
+  const boxX = hoverWeek != null ? Math.min(W - padR - 150, Math.max(padL, xAt(hoverWeek) + 10)) : 0;
+  const boxY = padT + 6;
+  const boxH = 22 + hovRows.length * 16;
+  const startTag = tags.find((t) => (loc.weeks[0].dist[t] || 0) > 0.5);
+
+  return (
+    <div>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', background: C.surface, borderRadius: 14, border: '1px solid ' + C.border, cursor: 'crosshair' }}
+        onMouseMove={onMove} onMouseLeave={() => setHoverWeek(null)}>
+        {[0, 0.5, 1].map((f, i) => (
+          <g key={i}>
+            <line x1={padL} y1={yAt(f)} x2={W - padR} y2={yAt(f)} stroke={C.border} strokeWidth={1} strokeDasharray="3 4" opacity={0.25} />
+            <text x={padL - 6} y={yAt(f) + 3} textAnchor="end" fontSize={10} fill={C.textDim}>{Math.round(f * 100)}%</text>
+          </g>
+        ))}
+        {xTicks.map((tk, i) => (
+          <g key={i}>
+            <line x1={xAt(tk.w)} y1={padT} x2={xAt(tk.w)} y2={padT + plotH} stroke={C.border} strokeWidth={1} strokeDasharray="2 4" opacity={0.3} />
+            <text x={xAt(tk.w)} y={H - 8} textAnchor="middle" fontSize={10} fill={C.textDim}>{tk.label}</text>
+          </g>
+        ))}
+        <line x1={padL} y1={padT} x2={padL} y2={padT + plotH} stroke={C.accentLt} strokeWidth={1.2} strokeDasharray="4 3" opacity={0.6} />
+        <text x={padL + 4} y={padT - 3} fontSize={10} fill={C.accentLt}>今天</text>
+        {areas.map((a) => (
+          <path key={a.tag} d={a.d} fill={a.color} fillOpacity={0.75} stroke="none" />
+        ))}
+        {hoverWeek != null && (
+          <line x1={xAt(hoverWeek)} y1={padT} x2={xAt(hoverWeek)} y2={padT + plotH} stroke={C.textSec} strokeWidth={1} opacity={0.6} />
+        )}
+        {hoverWeek != null && hov && (
+          <g>
+            <rect x={boxX} y={boxY} width={150} height={boxH} rx={8} fill={C.card} stroke={C.borderLit} opacity={0.97} />
+            <text x={boxX + 10} y={boxY + 16} fontSize={10} fill={C.textSec}>
+              {new Date(Date.now() + hoverWeek * 7 * 86400000).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })} · 第 {hoverWeek} 周
+            </text>
+            {hovRows.map((r, i) => (
+              <g key={r.tag}>
+                <circle cx={boxX + 14} cy={boxY + 28 + i * 16} r={3} fill={tagMeta(r.tag).color} />
+                <text x={boxX + 24} y={boxY + 32 + i * 16} fontSize={10} fill={C.text}>{tagMeta(r.tag).icon} {r.tag}</text>
+                <text x={boxX + 140} y={boxY + 32 + i * 16} fontSize={10} fill={C.text} textAnchor="end">{(r.p * 100).toFixed(0)}%</text>
+              </g>
+            ))}
+          </g>
+        )}
+      </svg>
+      <div style={{ display: 'flex', gap: 14, alignItems: 'center', fontSize: 11, color: C.textSec, marginTop: 8, flexWrap: 'wrap' }}>
+        {tags.map((t) => (
+          <span key={t} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 3, background: tagMeta(t).color, display: 'inline-block' }} />
+            {tagMeta(t).icon} {t}
+          </span>
+        ))}
+      </div>
+      <p style={{ fontSize: 11, color: C.textDim, marginTop: 6 }}>
+        基于位置转移 Markov 链向前外推：当前{startTag ? `在 ${tagMeta(startTag).icon}${startTag}` : '所在地'}，逐周推算处于各地点的概率（悬停看某周分布）。
+      </p>
     </div>
   );
 }

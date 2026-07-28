@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { hashPassword, setSession, clearSession, isAuthenticated } from './auth';
+import { hashPassword, setPrivateSession, clearPrivateSession, isPrivateUnlocked } from './auth';
 import { supabase } from './supabase';
 
 // 隐私解锁事件（跨页面标签页同步）
@@ -74,10 +74,10 @@ export async function unlockPrivate(pw: string): Promise<boolean> {
     }
     return false;
   }
-  // 3) 成功 → 清失败计数，建立会话并广播
+  // 3) 成功 → 清失败计数，建立「私密查看会话」并广播（不影响管理员登录态）
   lsSetNum(FAIL_COUNT_KEY, 0);
   lsSetNum(LOCK_UNTIL_KEY, 0);
-  setSession(hash);
+  setPrivateSession(hash);
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new Event(PRIVATE_UNLOCKED_EVENT));
     console.info('[private] 已解锁隐私内容（本页及同站点其他标签页）。输入 lockPrivate() 可重新锁定。');
@@ -85,9 +85,9 @@ export async function unlockPrivate(pw: string): Promise<boolean> {
   return true;
 }
 
-/** 控制台锁定：lockPrivate()。清除会话并广播锁定事件。 */
+/** 控制台锁定：lockPrivate()。清除私密会话并广播锁定事件（不影响管理员登录态）。 */
 export function lockPrivate(): void {
-  clearSession();
+  clearPrivateSession();
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new Event(PRIVATE_LOCKED_EVENT));
     console.info('[private] 已锁定隐私内容。');
@@ -96,7 +96,7 @@ export function lockPrivate(): void {
 
 export function privateStatus(): { unlocked: boolean; locked: boolean; retryAfterSec: number } {
   const rem = remainingLockMs();
-  return { unlocked: isAuthenticated(), locked: rem > 0, retryAfterSec: Math.ceil(rem / 1000) };
+  return { unlocked: isPrivateUnlocked(), locked: rem > 0, retryAfterSec: Math.ceil(rem / 1000) };
 }
 
 // 在浏览器中安装全局控制台命令（/private [password] 的等价实现）
@@ -109,7 +109,7 @@ if (typeof window !== 'undefined') {
     const s = privateStatus();
     console.log('[testPrivate] localStorage 会话:', s);
     if (!s.unlocked) { console.warn('[testPrivate] 未解锁，请先 unlockPrivate'); return; }
-    const hash = localStorage.getItem('datahub_pwd_hash');
+    const hash = localStorage.getItem('datahub_private_hash');
     console.log('[testPrivate] 哈希:', hash?.slice(0, 12) + '...');
     const [{ data: ev }, { data: mo }] = await Promise.all([
       supabase.rpc('fn_get_event_logs_admin', { p_hash: hash }),
@@ -140,7 +140,7 @@ if (typeof window !== 'undefined') {
  * 页面可将其加入 fetchData 的依赖以触发重新拉取私密数据。
  */
 export function usePrivateAccess(): { unlocked: boolean; refreshKey: number } {
-  const [unlocked, setUnlocked] = useState<boolean>(isAuthenticated());
+  const [unlocked, setUnlocked] = useState<boolean>(isPrivateUnlocked());
   const [refreshKey, setRefreshKey] = useState(0);
   useEffect(() => {
     const onUnlock = () => { setUnlocked(true); setRefreshKey((k) => k + 1); };

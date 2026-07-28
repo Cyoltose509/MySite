@@ -11,8 +11,9 @@ import { MoodLogger } from '@/components/admin/MoodLogger';
 import { EventCounter } from '@/components/admin/EventCounter';
 
 import { MealEditor } from '@/components/admin/MealEditor';
+import { LocationEditor } from '@/components/admin/LocationEditor';
 
-type TabId = 'sync' | 'music' | 'games' | 'meals' | 'mood' | 'events';
+type TabId = 'sync' | 'music' | 'games' | 'meals' | 'mood' | 'events' | 'location';
 
 const TABS: { id: TabId; label: string; icon: string }[] = [
   { id: 'sync', label: '数据同步', icon: '🔄' },
@@ -21,6 +22,7 @@ const TABS: { id: TabId; label: string; icon: string }[] = [
   { id: 'meals', label: '大餐标签', icon: '🍽️' },
   { id: 'mood', label: '心情记录', icon: '🧠' },
   { id: 'events', label: '事件计数', icon: '📅' },
+  { id: 'location', label: '位置停留', icon: '📍' },
 ];
 
 export default function AdminPage() {
@@ -95,6 +97,7 @@ export default function AdminPage() {
         {activeTab === 'meals' && <MealEditor />}
         {activeTab === 'mood' && <MoodLogger />}
         {activeTab === 'events' && <EventCounter />}
+        {activeTab === 'location' && <LocationEditor />}
       </main>
     </div>
   );

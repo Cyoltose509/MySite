@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
-import { getSession } from '@/lib/auth';
+import { getPrivateSession } from '@/lib/auth';
 import { usePrivateAccess } from '@/lib/private';
 import { C, pageStyle, headerStyle, h1Style, backLinkStyle, emptyStyle, loadingContainerStyle, spinnerStyle, loadingTextStyle } from '@/lib/card-styles';
 import { TIME_SCALES, type TimeScale } from '@/lib/types';
@@ -41,7 +41,7 @@ export default function EventsPage() {
     setLoading(true);
     let gs: EventGroup[] = [];
     if (unlocked) {
-      const gHash = getSession();
+      const gHash = getPrivateSession();
       if (gHash) {
         const { data: privGroups } = await supabase.rpc('fn_get_event_groups_admin', { p_hash: gHash });
         if (privGroups && Array.isArray(privGroups)) {
@@ -65,7 +65,7 @@ export default function EventsPage() {
     // 默认只取公开日志（RLS 已屏蔽私密组）；解锁后改用管理 RPC 拉取全部（含私密）
     let events: RawEvent[] = [];
     if (unlocked) {
-      const hash = getSession();
+      const hash = getPrivateSession();
       if (hash) {
         const { data: priv } = await supabase.rpc('fn_get_event_logs_admin', { p_hash: hash });
         if (priv && Array.isArray(priv)) {
