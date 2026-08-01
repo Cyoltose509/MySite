@@ -14,6 +14,7 @@ import { MealEditor } from '@/components/admin/MealEditor';
 import { LocationEditor } from '@/components/admin/LocationEditor';
 import { PeopleEditor } from '@/components/admin/PeopleEditor';
 import { PeopleGraphEditor } from '@/components/admin/PeopleGraphEditor';
+import { PeopleTagEditor } from '@/components/admin/PeopleTagEditor';
 
 type TabId = 'sync' | 'music' | 'games' | 'meals' | 'mood' | 'events' | 'location' | 'people';
 
@@ -32,7 +33,7 @@ export default function AdminPage() {
   const [auth, setAuth] = useState(false);
   const [checking, setChecking] = useState(true);
   const [activeTab, setActiveTab] = useState<TabId>('sync');
-  const [peopleView, setPeopleView] = useState<'table' | 'graph'>('table');
+  const [peopleView, setPeopleView] = useState<'table' | 'graph' | 'tag'>('table');
   const router = useRouter();
 
   useEffect(() => {
@@ -109,12 +110,18 @@ export default function AdminPage() {
                 style={{ ...styles.subBtn, ...(peopleView === 'table' ? styles.subBtnActive : {}) }}>
                 📋 表格总览
               </button>
+              <button onClick={() => setPeopleView('tag')}
+                style={{ ...styles.subBtn, ...(peopleView === 'tag' ? styles.subBtnActive : {}) }}>
+                🏷️ 按标签
+              </button>
               <button onClick={() => setPeopleView('graph')}
                 style={{ ...styles.subBtn, ...(peopleView === 'graph' ? styles.subBtnActive : {}) }}>
                 🕸️ 关系图谱
               </button>
             </div>
-            {peopleView === 'table' ? <PeopleEditor /> : <PeopleGraphEditor />}
+            {peopleView === 'table' && <PeopleEditor />}
+            {peopleView === 'tag' && <PeopleTagEditor />}
+            {peopleView === 'graph' && <PeopleGraphEditor />}
           </div>
         )}
       </main>

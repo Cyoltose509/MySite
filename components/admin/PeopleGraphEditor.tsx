@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { C } from '@/lib/card-styles';
+import { getQuickSearchIndex } from '@/lib/search';
 
 type RelKey = 'lover' | 'crush' | 'friend' | 'enemy' | 'roommate';
 
@@ -29,9 +30,9 @@ const NODE_COLOR = '#6366f1';
 const STORAGE_KEY = 'peopleGraphLayout';
 
 // 物理参数
-const REPULSE = 3200;   // 节点间斥力（随半径增大而提高）
+const REPULSE = 2000;   // 节点间斥力（调弱：整图更紧凑）
 const SPRING_K = 0.018; // 关系连线弹簧
-const SPRING_LEN = 86;  // 弹簧自然长度
+const SPRING_LEN = 150; // 弹簧自然长度（调大：连了线的节点之间更舒展，不挤成一团）
 const DAMP = 0.9;       // 阻尼
 const MAXV = 14;        // 速度上限（保证稳定）
 const JITTER = 0.05;    // 微扰，让画面一直“活着”
@@ -142,7 +143,7 @@ export function PeopleGraphEditor() {
         }
         // 弹簧（关系连线）：选中某关系类型时只该类型起作用（且加强其弹簧让聚类可见），移动模式全部生效
         const tTool = toolRef.current;
-        const selK = tTool !== 'select' ? SPRING_K * 3 : SPRING_K;
+        const selK = tTool !== 'select' ? SPRING_K * 2 : SPRING_K;
         edgesRef.current.forEach((e) => {
           if (tTool !== 'select' && e.type !== tTool) return;
           const a = pos[e.source], b = pos[e.target];
@@ -188,7 +189,15 @@ export function PeopleGraphEditor() {
   const matched = useMemo(() => {
     if (!search.trim()) return null;
     const q = search.trim().toLowerCase();
-    return new Set(people.filter((p) => p.name.toLowerCase().includes(q) || (p.nickname || '').toLowerCase().includes(q)).map((p) => p.id));
+    return new Set(
+      people
+        .filter(
+          (p) =>
+            getQuickSearchIndex(p.name.toLowerCase()).includes(q) ||
+            getQuickSearchIndex((p.nickname || '').toLowerCase()).includes(q)
+        )
+        .map((p) => p.id)
+    );
   }, [search, people]);
 
   // 用屏幕 CTM 反解，坐标系固定，拖动不再跳变
@@ -331,7 +340,7 @@ export function PeopleGraphEditor() {
           ))}
         </div>
         <div style={{ flex: 1 }} />
-        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="🔍 高亮名字 / 外号"
+        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="🔍 搜名字/外号（支持拼音）"
           style={{ padding: '7px 12px', borderRadius: 8, border: '1px solid #27273d', background: '#121224', color: C.text, fontSize: 13, outline: 'none', width: 220 }} />
         <button onClick={() => setLabels((v) => !v)} style={toolBtn(labels, C.accent)}>{labels ? '隐藏名字' : '显示名字'}</button>
         <button onClick={resetLayout} style={toolBtn(false, C.textDim)}>↺ 重置布局</button>
