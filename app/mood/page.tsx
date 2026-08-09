@@ -78,20 +78,25 @@ export default function MoodPage() {
       }
     };
 
-    const groups: Record<string, { scores: number[]; notes: string[] }> = {};
+    const groups: Record<string, { scores: number[]; notes: string[]; hasPrivate: boolean }> = {};
     for (const l of logs) {
       if (!l.mood_score) continue;
       const key = String(alignDown(new Date(l.created_at).getTime()));
-      if (!groups[key]) groups[key] = { scores: [], notes: [] };
+      if (!groups[key]) groups[key] = { scores: [], notes: [], hasPrivate: false };
       groups[key].scores.push(l.mood_score);
-      if (l.note && (l.visibility !== 'private' || unlocked)) groups[key].notes.push(l.note);
+      if (l.visibility === 'private') {
+        groups[key].hasPrivate = true; // 私密分数计入趋势，但文本不进 tooltip
+      } else if (l.note) {
+        groups[key].notes.push(l.note);
+      }
     }
 
     return Object.keys(groups).sort().map(key => ({
       ts: Number(key),
       avg: groups[key].scores.reduce((a, b) => a + b, 0) / groups[key].scores.length,
       count: groups[key].scores.length,
-      notes: groups[key].notes.slice(0, 3), // up to 3 notes for tooltip
+      notes: groups[key].notes.slice(0, 3), // up to 3 public notes for tooltip
+      hasPrivate: groups[key].hasPrivate,
     }));
   }, [logs, scale]);
 
@@ -178,6 +183,11 @@ export default function MoodPage() {
                   ))}
                 </div>
               )}
+              {points[tooltip.idx].hasPrivate && (
+                <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid rgba(255,255,255,0.06)', fontSize: 11, color: '#71717a' }}>
+                  🔒 含私密记录（文本已隐藏）
+                </div>
+              )}
             </div>
           )}
 
@@ -222,7 +232,9 @@ export default function MoodPage() {
                     }}
                     onMouseLeave={() => setTooltip(null)}
                   />
-                  <circle cx={x} cy={y} r={DOT_R} fill={LINE_COLOR} opacity={0.9} style={{ pointerEvents: 'none' }}/>
+                  <circle cx={x} cy={y} r={DOT_R} fill={p.hasPrivate ? '#27272e' : LINE_COLOR}
+                    stroke={p.hasPrivate ? LINE_COLOR : 'none'} strokeWidth={p.hasPrivate ? 1.5 : 0}
+                    opacity={0.95} style={{ pointerEvents: 'none' }} />
                   {/* 标签（稀疏） */}
                   {points.length <= 60 || i % Math.ceil(points.length / 20) === 0 ? (
                     <text x={x} y={CHART_H - 8} textAnchor="middle" fontSize={9} fill="#52525b"
