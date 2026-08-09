@@ -51,35 +51,15 @@ export default function DashboardPage() {
     setLoading(true);
     const loggedIn = isAuthenticated();
 
-    // 心情动态 - 最近3天
+    // 心情动态 - 最近3天（首页始终只展示公开心情）
     const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
-    let recentMoods: MoodLog[] = [];
-    if (unlocked) {
-      // 解锁后通过管理 RPC 拉取全部心情（含私密）
-      const hash = getPrivateSession();
-      if (hash) {
-        const { data: priv } = await supabase.rpc('fn_get_mood_logs_admin', { p_hash: hash });
-        if (priv && Array.isArray(priv)) {
-          recentMoods = (priv as Array<Record<string, unknown>>)
-            .filter((m) => new Date(m.created_at as string) >= new Date(threeDaysAgo))
-            .map((m) => ({
-              id: m.id as string,
-              mood: (m.mood as string) || '',
-              note: (m.note as string) || undefined,
-              mood_score: (m.mood_score as number) || undefined,
-              created_at: m.created_at as string,
-              visibility: m.visibility as string,
-            }));
-        }
-      }
-    }
-    if (!recentMoods.length) {
-      let moodQ = supabase.from('mood_logs').select('*').order('created_at', { ascending: false }).gte('created_at', threeDaysAgo);
-      if (!loggedIn) moodQ = moodQ.eq('visibility', 'public');
-      const { data } = await moodQ;
-      recentMoods = (data || []) as MoodLog[];
-    }
-    setRecentMoods(recentMoods);
+    const { data: moodData } = await supabase
+      .from('mood_logs')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .gte('created_at', threeDaysAgo)
+      .eq('visibility', 'public');
+    setRecentMoods((moodData || []) as MoodLog[]);
 
     // 事件组：解锁后走 admin RPC 拿全部（含私密），否则公开查
     let visibleGroups: EventGroup[] = [];
@@ -347,7 +327,6 @@ export default function DashboardPage() {
                 </span>
                   <span style={{ fontSize: 11, color: C.textSec }}>
                   {new Date(m.created_at).toLocaleDateString('zh-CN')}
-                  {m.visibility === 'private' && <span style={{ color: '#fbbf24', marginLeft: 6 }}>🔒</span>}
                 </span>
               </div>
             </div>
