@@ -3,8 +3,7 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
-import { isAuthenticated, getPrivateSession } from '@/lib/auth';
-import { usePrivateAccess } from '@/lib/private';
+import { isAuthenticated } from '@/lib/auth';
 import { MOOD_SCORE_LABELS, MOOD_EMOJIS, TIME_SCALES, type TimeScale } from '@/lib/types';
 import { C } from '@/lib/card-styles';
 
@@ -17,55 +16,74 @@ interface MoodLog {
   created_at: string;
 }
 
-const CHART_H = 300;
-const PAD_T = 10;
-const PAD_B = 50;
-const PAD_L = 50;
-const PAD_R = 30;
-const DOT_R = 5;
-const LINE_COLOR = '#a78bfa';
+interface AggPoint {
+  ts: number;
+  avg: number;
+  count: number;
+  notes: string[];
+}
+
+// 图表尺寸（viewBox，宽度随容器自适应，不做横向滚动）
+const W = 720;
+const H = 300;
+const PAD_L = 44;
+const PAD_R = 16;
+const PAD_T = 18;
+const PAD_B = 34;
+const PLOT_W = W - PAD_L - PAD_R;
+const PLOT_H = H - PAD_T - PAD_B;
+
+// Catmull-Rom 样条：把折线连成丝滑曲线（与 /predict 同款）
+function smoothPath(pts: { x: number; y: number }[]): string {
+  if (pts.length < 2) return pts.length ? `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}` : '';
+  let d = `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[i + 2] || p2;
+    const c1x = p1.x + (p2.x - p0.x) / 6;
+    const c1y = p1.y + (p2.y - p0.y) / 6;
+    const c2x = p2.x - (p3.x - p1.x) / 6;
+    const c2y = p2.y - (p3.y - p1.y) / 6;
+    d += ` C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
+  }
+  return d;
+}
 
 export default function MoodPage() {
   const [logs, setLogs] = useState<MoodLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [scale, setScale] = useState<TimeScale>('daily');
-  const [tooltip, setTooltip] = useState<{ x: number; y: number; idx: number } | null>(null);
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const chartRef = useRef<HTMLDivElement>(null);
-  const { unlocked, refreshKey } = usePrivateAccess();
 
-  useEffect(() => { fetchLogs(); }, [refreshKey]);
+  useEffect(() => {
+    fetchLogs();
+  }, []);
 
   const fetchLogs = async () => {
+    // 公开 RPC：任何人（含未登录访客）都能读到每条心情的分数；
+    // 私密条目的 note 在数据库层已被置空，前端永远拿不到私密文本，也无需任何区分 UI。
+    const { data } = await supabase.rpc('fn_get_mood_logs_public');
     let all: MoodLog[] = [];
-    if (unlocked) {
-      // 解锁后通过管理 RPC 拉取全部心情（含私密）
-      const hash = getPrivateSession();
-      if (hash) {
-        const { data: priv } = await supabase.rpc('fn_get_mood_logs_admin', { p_hash: hash });
-        if (priv && Array.isArray(priv)) {
-          all = (priv as Array<Record<string, unknown>>).map((m) => ({
-            id: m.id as string,
-            mood: (m.mood as string) || '',
-            note: (m.note as string) || undefined,
-            mood_score: (m.mood_score as number) || undefined,
-            visibility: (m.visibility as 'public' | 'private') || 'public',
-            created_at: m.created_at as string,
-          }));
-          all.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-        }
-      }
-    }
-    if (!all.length) {
-      // 未解锁：RLS 仅返回公开心情
-      const { data } = await supabase.from('mood_logs').select('*').order('created_at', { ascending: true }).limit(500);
-      all = (data || []) as MoodLog[];
+    if (data && Array.isArray(data)) {
+      all = (data as Array<Record<string, unknown>>).map((m) => ({
+        id: m.id as string,
+        mood: (m.mood as string) || '',
+        note: (m.note as string) || undefined,
+        mood_score: (m.mood_score as number) || undefined,
+        visibility: (m.visibility as 'public' | 'private') || 'public',
+        created_at: m.created_at as string,
+      }));
+      all.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     }
     setLogs(all);
     setLoading(false);
   };
 
-  // 按时间尺度聚合 mood_score（fetchLogs 已按权限过滤）
-  const points = useMemo(() => {
+  // 按时间尺度聚合 mood_score（无论公开/私密，分数都进趋势）
+  const points = useMemo<AggPoint[]>(() => {
     if (!logs.length) return [];
     const alignDown = (ts: number): number => {
       const d = new Date(ts);
@@ -78,15 +96,14 @@ export default function MoodPage() {
       }
     };
 
-    const groups: Record<string, { scores: number[]; notes: string[]; hasPrivate: boolean }> = {};
+    const groups: Record<string, { scores: number[]; notes: string[] }> = {};
     for (const l of logs) {
       if (!l.mood_score) continue;
       const key = String(alignDown(new Date(l.created_at).getTime()));
-      if (!groups[key]) groups[key] = { scores: [], notes: [], hasPrivate: false };
+      if (!groups[key]) groups[key] = { scores: [], notes: [] };
       groups[key].scores.push(l.mood_score);
-      if (l.visibility === 'private') {
-        groups[key].hasPrivate = true; // 私密分数计入趋势，但文本不进 tooltip
-      } else if (l.note) {
+      // 私密心情的 note 已在数据库层置空，这里只在有文本时展示（无需区分公开/私密）
+      if (l.note) {
         groups[key].notes.push(l.note);
       }
     }
@@ -95,8 +112,7 @@ export default function MoodPage() {
       ts: Number(key),
       avg: groups[key].scores.reduce((a, b) => a + b, 0) / groups[key].scores.length,
       count: groups[key].scores.length,
-      notes: groups[key].notes.slice(0, 3), // up to 3 public notes for tooltip
-      hasPrivate: groups[key].hasPrivate,
+      notes: groups[key].notes.slice(0, 3),
     }));
   }, [logs, scale]);
 
@@ -104,31 +120,49 @@ export default function MoodPage() {
     const d = new Date(ts);
     const pad = (n: number) => String(n).padStart(2, '0');
     switch (scale) {
-      case 'hourly': return `${pad(d.getMonth()+1)}/${pad(d.getDate())} ${pad(d.getHours())}:00`;
-      case 'daily': return `${pad(d.getMonth()+1)}/${pad(d.getDate())}`;
-      case 'weekly': return `${pad(d.getMonth()+1)}/${pad(d.getDate())}`;
-      case 'monthly': return `${d.getFullYear()}/${pad(d.getMonth()+1)}`;
+      case 'hourly': return `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:00`;
+      case 'daily': return `${pad(d.getMonth() + 1)}/${pad(d.getDate())}`;
+      case 'weekly': return `${pad(d.getMonth() + 1)}/${pad(d.getDate())}`;
+      case 'monthly': return `${d.getFullYear()}/${pad(d.getMonth() + 1)}`;
       case 'yearly': return `${d.getFullYear()}`;
     }
   };
 
-  // 图表尺寸计算
-  const barW = 10;
-  const totalW = Math.max(points.length * (barW + 2) + PAD_L + PAD_R, 600);
-  const plotH = CHART_H - PAD_T - PAD_B;
-
   const latestScore = logs.filter(l => l.mood_score).slice(-1)[0]?.mood_score;
+
+  // 坐标系
+  const xAt = (i: number) => PAD_L + (points.length <= 1 ? 0 : (i / (points.length - 1)) * PLOT_W);
+  const yAt = (v: number) => PAD_T + PLOT_H - (Math.min(10, Math.max(0, v)) / 10) * PLOT_H;
+
+  // 平滑曲线 + 面积
+  const linePts = points.map((p, i) => ({ x: xAt(i), y: yAt(p.avg) }));
+  const meanPath = smoothPath(linePts);
+  const areaPath = linePts.length
+    ? `${meanPath} L ${xAt(points.length - 1).toFixed(1)} ${(PAD_T + PLOT_H).toFixed(1)} L ${xAt(0).toFixed(1)} ${(PAD_T + PLOT_H).toFixed(1)} Z`
+    : '';
+
+  const yTicks = [10, 8, 6, 4, 2, 0];
+  const xTickStep = Math.max(1, Math.ceil(points.length / 12));
+
+  const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (points.length < 2) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * W;
+    const frac = (x - PAD_L) / PLOT_W;
+    const idx = Math.max(0, Math.min(points.length - 1, Math.round(frac * (points.length - 1))));
+    setHoverIdx(idx);
+  };
 
   if (loading) {
     return <div style={S.loading}><div style={S.spinner} /><p>加载中...</p></div>;
   }
 
   return (
-    <div style={S.page}>
-      <header style={S.header}>
-        <Link href="/" style={S.back}>← 首页</Link>
-        <h1 style={S.h1}>🧠 心情记录</h1>
-        <span style={S.badge}>{logs.length} 条</span>
+    <div style={pageStyle}>
+      <header style={headerStyle}>
+        <Link href="/" style={backLinkStyle}>← 首页</Link>
+        <h1 style={h1Style}>🧠 心情记录</h1>
+        <span style={countBadgeStyle}>{logs.length} 条</span>
         {isAuthenticated() && (<Link href="/admin" style={S.adminLink}>管理 →</Link>)}
       </header>
 
@@ -136,130 +170,139 @@ export default function MoodPage() {
       {latestScore && (
         <div style={{
           textAlign: 'center', padding: '16px 20px', borderRadius: 16,
-          background: '#121224', border: '1px solid #1e1e32', marginBottom: 24,
+          background: C.surface, border: '1px solid ' + C.borderLit, marginBottom: 24,
         }}>
-          <div style={{ fontSize: 13, color: '#a1a1aa', marginBottom: 4 }}>最近心情</div>
+          <div style={{ fontSize: 13, color: C.textSec, marginBottom: 4 }}>最近心情</div>
           <div style={{ fontSize: 48, lineHeight: 1 }}>{MOOD_EMOJIS[(latestScore || 6) - 1]}</div>
-          <div style={{ fontSize: 32, fontWeight: 800, color: '#e4e4e7' }}>{latestScore}/10</div>
-          <div style={{ fontSize: 14, color: '#a5b4fc' }}>{MOOD_SCORE_LABELS[latestScore]}</div>
+          <div style={{ fontSize: 32, fontWeight: 800, color: C.text }}>{latestScore}/10</div>
+          <div style={{ fontSize: 14, color: C.accentLt }}>{MOOD_SCORE_LABELS[latestScore]}</div>
         </div>
       )}
 
       {/* 尺度选择 */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
         {TIME_SCALES.map(s => (
           <button key={s.value} onClick={() => setScale(s.value)} style={{
             padding: '5px 12px', borderRadius: 14, fontSize: 12, outline: 'none',
-            border: `1px solid ${scale === s.value ? '#6366f1' : 'rgba(255,255,255,.12)'}`,
-            background: scale === s.value ? '#6366f122' : 'transparent',
-            color: scale === s.value ? '#a5b4fc' : '#a1a1aa', cursor: 'pointer',
+            border: `1px solid ${scale === s.value ? C.accent : C.border}`,
+            background: scale === s.value ? C.accent + '22' : 'transparent',
+            color: scale === s.value ? C.accentLt : C.textSec, cursor: 'pointer',
           }}>{s.label}</button>
         ))}
-        <span style={{ fontSize: 11, color: '#52525b', marginLeft: 'auto' }}>{points.length} 个数据点</span>
+        <span style={{ fontSize: 11, color: C.textDead, marginLeft: 'auto' }}>{points.length} 个数据点</span>
       </div>
 
       {/* 折线图 */}
-      {points.length > 1 && (
-        <div ref={chartRef} style={{ position: 'relative', overflowX: 'auto', borderRadius: 16, border: '1px solid #1e1e32', background: '#0c0c1a', marginBottom: 32 }}>
-          {/* Tooltip */}
-          {tooltip && points[tooltip.idx] && (
+      {points.length > 1 ? (
+        <div ref={chartRef} style={{ position: 'relative', borderRadius: 16, border: '1px solid ' + C.border, background: C.surface, marginBottom: 12 }}>
+          {/* 图例 */}
+          <div style={{ display: 'flex', gap: 16, alignItems: 'center', fontSize: 11, color: C.textSec, padding: '12px 16px 0' }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              <span style={{ width: 18, height: 3, background: C.purple, borderRadius: 2, display: 'inline-block' }} /> 心情均分
+            </span>
+          </div>
+
+          {/* Tooltip（HTML 浮层） */}
+          {hoverIdx != null && points[hoverIdx] && (
             <div style={{
-              position: 'absolute', left: Math.min(tooltip.x + 12, (chartRef.current?.clientWidth || 900) - 200),
-              top: tooltip.y - 10, zIndex: 20, padding: '10px 14px', borderRadius: 10,
-              background: '#1a1a30', border: '1px solid #2a2a45',
+              position: 'absolute',
+              left: `calc(${(xAt(hoverIdx) / W) * 100}% + 12px)`,
+              top: 8, zIndex: 20, padding: '10px 14px', borderRadius: 10,
+              background: C.card, border: '1px solid ' + C.borderLit,
               boxShadow: '0 4px 16px rgba(0,0,0,.6)', minWidth: 150, maxWidth: 240,
+              pointerEvents: 'none',
             }}>
-              <div style={{ fontSize: 11, color: '#a1a1aa', marginBottom: 4 }}>{fmtLabel(points[tooltip.idx].ts)}</div>
-              <div style={{ fontSize: 22, fontWeight: 800, color: '#e4e4e7' }}>
-                {MOOD_EMOJIS[Math.round(points[tooltip.idx].avg) - 1] || ''} {points[tooltip.idx].avg.toFixed(1)}/10
+              <div style={{ fontSize: 11, color: C.textSec, marginBottom: 4 }}>{fmtLabel(points[hoverIdx].ts)}</div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: C.text }}>
+                {MOOD_EMOJIS[Math.round(points[hoverIdx].avg) - 1] || ''} {points[hoverIdx].avg.toFixed(1)}/10
               </div>
-              <div style={{ fontSize: 12, color: '#a5b4fc' }}>
-                {MOOD_SCORE_LABELS[Math.round(points[tooltip.idx].avg)] || ''} · {points[tooltip.idx].count} 条
+              <div style={{ fontSize: 12, color: C.accentLt }}>
+                {MOOD_SCORE_LABELS[Math.round(points[hoverIdx].avg)] || ''} · {points[hoverIdx].count} 条
               </div>
-              {points[tooltip.idx].notes.length > 0 && (
+              {points[hoverIdx].notes.length > 0 && (
                 <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-                  {points[tooltip.idx].notes.map((n, ni) => (
-                    <div key={ni} style={{ fontSize: 11, color: '#d4d4d8', lineHeight: 1.5 }}>&quot;{n}&quot;</div>
+                  {points[hoverIdx].notes.map((n, ni) => (
+                    <div key={ni} style={{ fontSize: 11, color: C.text, lineHeight: 1.5 }}>&quot;{n}&quot;</div>
                   ))}
-                </div>
-              )}
-              {points[tooltip.idx].hasPrivate && (
-                <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid rgba(255,255,255,0.06)', fontSize: 11, color: '#71717a' }}>
-                  🔒 含私密记录（文本已隐藏）
                 </div>
               )}
             </div>
           )}
 
-          <svg width={totalW} height={CHART_H} style={{ display: 'block', fontFamily: 'sans-serif', minWidth: '100%' }}>
-            {/* 水平参考线和标签 */}
-            {[10, 8, 6, 4, 2].map(level => {
-              const y = PAD_T + plotH * (1 - level / 10);
+          <svg
+            viewBox={`0 0 ${W} ${H}`}
+            style={{ width: '100%', height: 'auto', display: 'block', fontFamily: 'sans-serif', marginTop: 4, cursor: 'crosshair' }}
+            onMouseMove={onMove}
+            onMouseLeave={() => setHoverIdx(null)}
+          >
+            <defs>
+              <linearGradient id="moodAreaGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={C.purple} stopOpacity={0.35} />
+                <stop offset="100%" stopColor={C.purple} stopOpacity={0} />
+              </linearGradient>
+            </defs>
+
+            {/* 横向网格 + Y 轴标签 */}
+            {yTicks.map(level => {
+              const y = yAt(level);
               return (
                 <g key={level}>
-                  <line x1={PAD_L} y1={y} x2={totalW - PAD_R} y2={y} stroke="#ffffff08" strokeDasharray="4,4"/>
-                  <text x={PAD_L - 8} y={y + 4} textAnchor="end" fontSize={9} fill="#52525b">{level}</text>
+                  <line x1={PAD_L} y1={y} x2={W - PAD_R} y2={y} stroke={C.border} strokeWidth={1} strokeDasharray="3 4" opacity={0.3} />
+                  <text x={PAD_L - 8} y={y + 3} textAnchor="end" fontSize={10} fill={C.textDead}>{level}</text>
                 </g>
               );
             })}
 
-            {/* 折线 */}
-            {points.map((p, i) => {
-              if (i === 0) return null;
-              const prev = points[i - 1];
-              const x1 = PAD_L + (i - 1) * (barW + 2) + barW / 2;
-              const x2 = PAD_L + i * (barW + 2) + barW / 2;
-              const y1 = PAD_T + plotH * (1 - prev.avg / 10);
-              const y2 = PAD_T + plotH * (1 - p.avg / 10);
+            {/* 渐变面积 */}
+            {areaPath && <path d={areaPath} fill="url(#moodAreaGrad)" stroke="none" />}
+
+            {/* 平滑曲线 */}
+            {meanPath && <path d={meanPath} fill="none" stroke={C.purple} strokeWidth={2.4} strokeLinejoin="round" strokeLinecap="round" />}
+
+            {/* 悬停竖向引导线 + 高亮点 */}
+            {hoverIdx != null && (() => {
+              const x = xAt(hoverIdx);
+              const y = yAt(points[hoverIdx].avg);
               return (
-                <g key={p.ts}>
-                  <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={LINE_COLOR} strokeWidth={2.5} strokeLinecap="round"/>
+                <g>
+                  <line x1={x} y1={PAD_T} x2={x} y2={PAD_T + PLOT_H} stroke={C.textSec} strokeWidth={1} opacity={0.5} />
+                  <circle cx={x} cy={y} r={5} fill={C.purple} stroke={C.surface} strokeWidth={2} />
                 </g>
               );
-            })}
+            })()}
 
-            {/* 数据点 + 交互层 */}
+            {/* 数据点 */}
             {points.map((p, i) => {
-              const x = PAD_L + i * (barW + 2) + barW / 2;
-              const y = PAD_T + plotH * (1 - p.avg / 10);
+              const x = xAt(i);
+              const y = yAt(p.avg);
               return (
                 <g key={p.ts}>
-                  {/* 透明大点击区域 */}
-                  <circle cx={x} cy={y} r={16} fill="transparent" style={{ cursor: 'pointer' }}
-                    onMouseEnter={(e) => {
-                      const ct = chartRef.current; if (!ct) return;
-                      setTooltip({ x: e.clientX - ct.getBoundingClientRect().left, y, idx: i });
-                    }}
-                    onMouseLeave={() => setTooltip(null)}
-                  />
-                  <circle cx={x} cy={y} r={DOT_R} fill={p.hasPrivate ? '#27272e' : LINE_COLOR}
-                    stroke={p.hasPrivate ? LINE_COLOR : 'none'} strokeWidth={p.hasPrivate ? 1.5 : 0}
-                    opacity={0.95} style={{ pointerEvents: 'none' }} />
-                  {/* 标签（稀疏） */}
-                  {points.length <= 60 || i % Math.ceil(points.length / 20) === 0 ? (
-                    <text x={x} y={CHART_H - 8} textAnchor="middle" fontSize={9} fill="#52525b"
-                      transform={`rotate(-35, ${x}, ${CHART_H - 8})`}>{fmtLabel(p.ts)}</text>
-                  ) : null}
+                  <circle cx={x} cy={y} r={4} fill={C.purple} opacity={0.95} />
+                  {/* 稀疏 X 轴标签 */}
+                  {i % xTickStep === 0 && (
+                    <text x={x} y={H - 10} textAnchor="middle" fontSize={10} fill={C.textDead}>{fmtLabel(p.ts)}</text>
+                  )}
                 </g>
               );
             })}
           </svg>
         </div>
+      ) : (
+        <p style={emptyStyle}>数据点太少，至少需要 2 条记录才能生成图表</p>
       )}
-
-      {points.length <= 1 && <p style={S.empty}>数据点太少，至少需要 2 条记录才能生成图表</p>}
 
       {/* 最近记录列表 */}
       <div style={{ marginTop: 8 }}>
-        <h3 style={{ fontSize: 15, fontWeight: 600, color: '#e4e4e7', margin: '0 0 14px' }}>最近记录</h3>
+        <h3 style={{ fontSize: 15, fontWeight: 600, color: C.text, margin: '0 0 14px' }}>最近记录</h3>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {logs.filter(l => unlocked || l.visibility !== 'private').slice(-20).reverse().map(log => (
+          {logs.slice(-20).reverse().map(log => (
             <div key={log.id} style={S.logRow}>
               <span style={{ fontSize: 20, minWidth: 30, textAlign: 'center' }}>{MOOD_EMOJIS[(log.mood_score || 6) - 1]}</span>
-              <span style={{ fontSize: 13, fontWeight: 600, color: '#e4e4e7' }}>{log.mood_score}/10 {MOOD_SCORE_LABELS[log.mood_score || 6] || ''}</span>
-              {log.note && <span style={{ fontSize: 12, color: '#a1a1aa', flex: 1, whiteSpace: 'pre-wrap' }}>{log.note}</span>}
-              {!log.note && <span style={{ fontSize: 11, color: '#52525b', flex: 1 }}/>}
-              <span style={{ fontSize: 11, color: '#52525b', fontFamily: 'monospace' }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{log.mood_score}/10 {MOOD_SCORE_LABELS[log.mood_score || 6] || ''}</span>
+              {log.note && (
+                <span style={{ fontSize: 12, color: C.textSec, flex: 1, whiteSpace: 'pre-wrap' }}>{log.note}</span>
+              )}
+              <span style={{ fontSize: 11, color: C.textDead, fontFamily: 'monospace', marginLeft: 'auto' }}>
                 {new Date(log.created_at).toLocaleDateString('zh-CN')} {new Date(log.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
               </span>
             </div>
@@ -271,16 +314,16 @@ export default function MoodPage() {
 }
 
 const S: Record<string, React.CSSProperties> = {};
-S.page = { minHeight: '100vh', maxWidth: 1000, margin: '0 auto', padding: '28px 20px 40px' };
 S.loading = { minHeight: '80vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16 };
-S.spinner = { width: 36, height: 36, borderRadius: '50%', border: '3px solid #1e1e32', borderTopColor: '#6366f1', animation: 'spin 0.8s linear infinite' };
-S.header = { display: 'flex', alignItems: 'center', gap: 16, marginBottom: 28 };
-S.back = { fontSize: 13, color: '#71717a', textDecoration: 'none' };
-S.h1 = { fontSize: 24, fontWeight: 800, color: '#fff', margin: 0, flex: 1 };
-S.badge = { padding: '4px 14px', borderRadius: 20, background: '#16162a', border: '1px solid #27273d', fontSize: 13, color: '#818cf8' };
-S.adminLink = { padding: '6px 14px', borderRadius: 10, border: '1px solid #27273d', color: '#818cf8', fontSize: 12, textDecoration: 'none' };
+S.spinner = { width: 36, height: 36, borderRadius: '50%', border: '3px solid ' + C.border, borderTopColor: C.accent, animation: 'spin 0.8s linear infinite' };
+S.adminLink = { padding: '6px 14px', borderRadius: 10, border: '1px solid ' + C.borderLit, color: C.accentLt, fontSize: 12, textDecoration: 'none' };
 S.logRow = {
   display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px',
-  borderRadius: 10, background: '#121224', border: '1px solid #1e1e32',
+  borderRadius: 10, background: C.surface, border: '1px solid ' + C.border,
 };
-S.empty = { textAlign: 'center', color: '#52525b', fontSize: 13, padding: 48, lineHeight: 1.5 };
+const pageStyle: React.CSSProperties = { minHeight: '100vh', maxWidth: 1000, margin: '0 auto', padding: '28px 20px 40px' };
+const headerStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 16, marginBottom: 28 };
+const backLinkStyle: React.CSSProperties = { fontSize: 13, color: C.textDim, textDecoration: 'none' };
+const h1Style: React.CSSProperties = { fontSize: 24, fontWeight: 800, color: '#fff', margin: 0, flex: 1 };
+const countBadgeStyle: React.CSSProperties = { padding: '4px 14px', borderRadius: 20, background: C.card, border: '1px solid ' + C.borderLit, fontSize: 13, color: C.accentLt };
+const emptyStyle: React.CSSProperties = { textAlign: 'center', color: C.textDead, fontSize: 13, padding: 48, lineHeight: 1.5 };
