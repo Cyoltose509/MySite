@@ -10,20 +10,23 @@ import {
   loadingContainerStyle, spinnerStyle, loadingTextStyle,
 } from '@/lib/card-styles';
 import {
-  computeTiming, predictNextEntityMarkov, computeGroupDependencies, weekdayName,
+  computeTiming, predictNextEntityMarkov, blendMarkovResults, computeGroupDependencies, weekdayName,
   countdownText, fmtDate, CONFIDENCE_LABEL, CONFIDENCE_COLOR, assocColor, assocLabel,
   predictNoveltyMeal, predictNewSongCount,
-  buildDailyFeatures, computeCrossDomain, predictScenarioMotifs, detectChangePoints, detectRegimes, clusterDayArchetypes,
-  forecastFutureRegimes, setHolidaySet, fetchHolidays,
+  buildDailyFeatures, computeCrossDomain, predictScenarioMotifs, detectRegimes,
+  forecastFutureRegimes, forecastScalarSeries, computeDomainTriad, setHolidaySet, fetchHolidays,
+  median, mean, linregSlope,
   type EventLogLite, type EventGroupLite, type EntityRank, type MarkovItem, type GroupDep,
-  type MoodPoint, type SleepPoint, type ForecastSeries, type ForecastResult,
+  type MoodPoint, type ForecastSeries, type ForecastResult, type DomainTriad, type ScalarForecastResult,
 } from '@/lib/prediction';
 import { currentTag, tagAt, locationTagActivityProfile, predictLocationTransition, forecastLocationState, logsForTag, type LocStay, type LocTagStay, type LocationTransitionResult, type LocationStateForecast } from '@/lib/location-predict';
+import { groupBySleepDay, utcToBeijing } from '@/lib/sleep-utils';
 import { tagMeta } from '@/lib/location-place';
 
 interface MusicLite { id: string; title: string; artist: string[]; created_at?: string; }
 interface MusicTagLite { music_id: string; singability?: number; likability?: number; }
 interface MealLite { id: string; title: string; rating: string; }
+interface SleepSeg { start_date: string; end_date: string; sleep_type: string; duration_minutes: number; }
 
 // 大餐评分（序数）→ 偏好分 0..1
 const MEAL_PREF: Record<string, number> = { '夯': 1.0, '顶级': 0.8, '人上人': 0.55, 'NPC': 0.3, '拉完了': 0.1 };
@@ -37,7 +40,7 @@ export default function PredictPage() {
   const [songTopN, setSongTopN] = useState(10);
   const [songTopNInput, setSongTopNInput] = useState('10');
   const [moodData, setMoodData] = useState<MoodPoint[]>([]);
-  const [sleepData, setSleepData] = useState<SleepPoint[]>([]);
+  const [sleepData, setSleepData] = useState<SleepSeg[]>([]);
   const [locationStays, setLocationStays] = useState<LocStay[]>([]);
   const [tagStays, setTagStays] = useState<LocTagStay[]>([]);
   const [loading, setLoading] = useState(true);
@@ -66,14 +69,14 @@ export default function PredictPage() {
     }
     setGroups(groupsData);
 
-    const [{ data: lData }, { data: mData }, { data: tData }, { data: mealData }, { data: moodData }, { data: sleepData }] =
+    const [{ data: lData }, { data: mData }, { data: tData }, { data: mealData }, moodRes, sleepRes] =
       await Promise.all([
         supabase.from('event_logs').select('id, group_id, event_at, refs'),
         supabase.from('music_list').select('id, title, artist, created_at'),
         supabase.from('music_tags').select('music_id, singability, likability'),
         supabase.from('meals').select('id, title, rating'),
-        supabase.from('mood_logs').select('created_at, mood_score'),
-        supabase.from('health_sleep').select('start_date, duration_minutes'),
+        supabase.rpc('fn_get_mood_logs_public'),
+        supabase.from('health_sleep').select('start_date, end_date, sleep_type, duration_minutes'),
       ]);
 
     let mergedLogs = (lData || []) as EventLogLite[];
@@ -110,8 +113,8 @@ export default function PredictPage() {
     for (const m of (mealData || []) as MealLite[]) ml[m.id] = m;
     setMealById(ml);
 
-    setMoodData((moodData || []) as MoodPoint[]);
-    setSleepData((sleepData || []) as SleepPoint[]);
+    setMoodData((moodRes.data || []) as MoodPoint[]);
+    setSleepData((sleepRes.data || []) as SleepSeg[]);
 
     // 公开标签时段（不含城市）：始终拉取，用于公开标签规律
     const { data: tag } = await supabase.rpc('fn_get_location_tag_stays');
@@ -283,6 +286,40 @@ export default function PredictPage() {
       : null),
     [currentTagCtx, isTagRandom, mealLogsByTag, mealGroup, mealPref, mealById]
   );
+  // 大餐主预测：优先用「当前位置」本地规律；否则回退整体规律。
+  const mealMain = mealPredTag ?? mealPred;
+  const usingLocationMeal = !!mealPredTag && !!currentTagCtx;
+  // 新菜概率也跟随主预测：本地记录足够时按本地算，否则按整体算。
+  const mealNoveltyMain = useMemo(
+    () => (usingLocationMeal && mealLogsByTag.length
+      ? predictNoveltyMeal(mealLogsByTag)
+      : mealNovelty),
+    [usingLocationMeal, mealLogsByTag, mealNovelty]
+  );
+  // 把「前所未见新菜」并入大餐分类分布（与新菜互斥：新菜概率 = nov，其余已知菜 = (1-nov)·原概率，总和恒为 1）。
+  // 合并后统一排序——概率最高时「新菜」自然排到最前，不再单独成框、也不会让总概率超过 100%。
+  const mealCombined = useMemo(() => {
+    if (!mealMain) return null;
+    const nov = mealNoveltyMain && mealNoveltyMain.prob > 0 ? mealNoveltyMain.prob : 0;
+    const items: MarkovItem[] = mealMain.nextTop.map((e) => ({
+      ...e,
+      prob: (1 - nov) * e.prob,
+      isNew: false,
+    }));
+    if (nov > 0) {
+      items.unshift({ id: '__novel__', title: '🆕 前所未见的新菜', prob: nov, fromTransition: false, pref: null, isNew: true });
+    }
+    items.sort((a, b) => (b.prob ?? 0) - (a.prob ?? 0));
+    return { items, nov };
+  }, [mealMain, mealNoveltyMain]);
+  // 唱歌主预测：地区只起偏置、不主导（融合全局 + 当前位置本地规律，
+  // 权重 0.4 → 全局数据始终保留，不会"只看该地区数据"）。整份歌单基于 songMain。
+  const SONG_LOCAL_WEIGHT = 0.4;
+  const songMain = useMemo(
+    () => (songPred ? blendMarkovResults(songPred, songPredTag, SONG_LOCAL_WEIGHT) : null),
+    [songPred, songPredTag]
+  );
+  const usingLocationSong = !!songPredTag && !!currentTagCtx;
 
   // ── 位置变动规律（标签级公开 / 地点级私密）──
   const locTrans = useMemo<LocationTransitionResult | null>(() => {
@@ -322,12 +359,145 @@ export default function PredictPage() {
 
   const deps = useMemo(() => computeGroupDependencies(groups, logsByGroup, 2), [groups, logsByGroup]);
 
-  // 高级预测：每日特征 + 跨域联动 + 场景motif + 习惯漂移 + 日常原型聚类
+  // 高级预测：每日特征 + 跨域联动 + 三者两两关系 + 场景motif + 阶段起伏
   const dailyFeatures = useMemo(
     () => buildDailyFeatures(rawLogs, groups, moodData, sleepData),
     [rawLogs, groups, moodData, sleepData]
   );
   const crossDomain = useMemo(() => computeCrossDomain(dailyFeatures, groups), [dailyFeatures, groups]);
+
+  // 三者两两关系（心情 / 睡眠 / 位置）
+  const domainTriad = useMemo(
+    () => computeDomainTriad(dailyFeatures, (ts) => tagAt(ts, tagStays)?.tag ?? null),
+    [dailyFeatures, tagStays]
+  );
+
+  // ── 心情 / 睡眠 预测曲线用的每日序列 ──
+  const avg = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
+  const moodDaily = useMemo(() => {
+    const m = new Map<string, number[]>();
+    for (const r of moodData) {
+      const d = new Date(r.created_at).toISOString().slice(0, 10);
+      if (!m.has(d)) m.set(d, []);
+      m.get(d)!.push(r.mood_score);
+    }
+    return [...m.entries()].map(([date, v]) => ({ date, value: avg(v) }));
+  }, [moodData]);
+
+  const sleepNightly = useMemo(() => {
+    // 与 /sleep 页保持一致：以北京 18:00 为一天起点；睡眠时长 = 非 in_bed 段总分钟；入睡时间 = 最长 in_bed 段起点
+    const byNight = groupBySleepDay(sleepData);
+    const onset: { date: string; value: number | undefined }[] = [];
+    const dur: { date: string; value: number | undefined }[] = [];
+    for (const night of byNight) {
+      if (!night.segs.length) continue;
+      const sorted = night.segs.slice().sort((a, b) => a.start_date.localeCompare(b.start_date));
+      const inBedSegs = sorted.filter((s) => s.sleep_type === 'in_bed');
+      const mainBed = inBedSegs.length
+        ? inBedSegs.reduce((a, b) => ((a.duration_minutes || 0) >= (b.duration_minutes || 0) ? a : b))
+        : sorted[0];
+      const { beijingHr } = utcToBeijing(mainBed.start_date);
+      const hr = beijingHr >= 18 ? beijingHr : beijingHr + 24; // 早凌晨归到 24+，曲线连续
+      onset.push({ date: night.day, value: hr });
+      dur.push({ date: night.day, value: (night.asleepMin || 0) / 60 }); // 内部转为小时，展示更直观
+    }
+    return { onset, dur };
+  }, [sleepData]);
+
+  // 心情不做自身历史外推（无稳定周期、硬外推只会造假规律），
+  // 改由「睡眠时长」+「所在地」这两个【可预测变量】驱动：
+  //   心情(d) ≈ 基线 + 斜率·(预测睡眠时长(d) − 平均睡眠) + Σ 地点概率·该地点心情偏离
+  const moodFc = useMemo<ScalarForecastResult>(() => {
+    if (!moodDaily.length) return { points: [], level: null, hasEnough: false };
+    const baseMood = median(moodDaily.map((d) => d.value));
+    const DAY = 86400000;
+    // 睡眠时长未来预测（与下方 durFc 同口径），作为心情的「睡眠驱动」输入
+    const sleepFc = forecastScalarSeries(sleepNightly.dur, { horizonWeeks: 4, minHistory: 14, seasonal: true, revertWeeks: 8 });
+
+    // ① 睡眠驱动：对齐「同日有心情 + 有睡眠时长」的日子，回归 心情 ~ 睡眠小时
+    const durByDate = new Map(sleepNightly.dur.map((d) => [d.date, d.value]));
+    const pairs: { mood: number; dur: number }[] = [];
+    for (const m of moodDaily) {
+      const dv = durByDate.get(m.date);
+      if (dv != null && isFinite(dv)) pairs.push({ mood: m.value, dur: dv });
+    }
+    const avgSleepHr = pairs.length ? mean(pairs.map((p) => p.dur)) : 7;
+    const sleepSlope = linregSlope(pairs.map((p) => p.dur), pairs.map((p) => p.mood)); // Δ心情/Δ小时
+
+    // ② 位置驱动：各地点相对基线的心情偏离（全量，而非只取偏离最大者）
+    const byTag: Record<string, number[]> = {};
+    for (const m of moodDaily) {
+      const ts = new Date(m.date + 'T00:00:00Z').getTime();
+      const tag = tagAt(ts, tagStays)?.tag ?? null;
+      if (!tag) continue;
+      if (!byTag[tag]) byTag[tag] = [];
+      byTag[tag].push(m.value);
+    }
+    const tagMood: Record<string, number> = {};
+    for (const [tag, arr] of Object.entries(byTag)) {
+      if (arr.length >= 3) tagMood[tag] = mean(arr) - baseMood;
+    }
+
+    const todayMid = new Date(); todayMid.setUTCHours(0, 0, 0, 0);
+    const hist = moodDaily.map((d) => ({
+      dayOffset: Math.round((new Date(d.date + 'T00:00:00Z').getTime() - todayMid.getTime()) / DAY),
+      dateISO: new Date(d.date + 'T00:00:00Z').toISOString(),
+      value: d.value, isFuture: false,
+    }));
+    const futRaw = sleepFc.points.filter((p) => p.isFuture);
+    const fut = futRaw.map((p) => {
+      const w = Math.min(Math.ceil(p.dayOffset / 7), Math.max(0, (locState?.weeks.length ?? 1) - 1));
+      const dist = locState?.weeks[w]?.dist ?? {};
+      let locDev = 0;
+      for (const [tag, prob] of Object.entries(dist)) locDev += (tagMood[tag] ?? 0) * prob;
+      const sleepDev = sleepSlope * ((p.value ?? avgSleepHr) - avgSleepHr);
+      return { dayOffset: p.dayOffset, dateISO: p.dateISO, value: baseMood + sleepDev + locDev, isFuture: true };
+    });
+    return { points: [...hist, ...fut], level: baseMood, hasEnough: true };
+  }, [moodDaily, sleepNightly, locState, tagStays]);
+  // 睡眠（入睡/时长）也吃【所在地】因素：各地点相对全量基线的偏离，
+  // 按位置预测的逐周概率加权，叠加到 forecastScalarSeries 的未来点上（与心情同一套路）。
+  const onsetLocDev = useMemo(() => {
+    const vals = sleepNightly.onset.filter((d) => d.value != null && isFinite(d.value)).map((d) => d.value as number);
+    const base = vals.length ? median(vals) : 0;
+    const byTag: Record<string, number[]> = {};
+    for (const o of sleepNightly.onset) {
+      if (o.value == null || !isFinite(o.value)) continue;
+      const ts = new Date(o.date + 'T00:00:00Z').getTime();
+      const tag = tagAt(ts, tagStays)?.tag ?? null;
+      if (!tag) continue;
+      (byTag[tag] ||= []).push(o.value);
+    }
+    const out: Record<string, number> = {};
+    for (const [tag, arr] of Object.entries(byTag)) if (arr.length >= 3) out[tag] = mean(arr) - base;
+    return out;
+  }, [sleepNightly, tagStays]);
+
+  const durLocDev = useMemo(() => {
+    const vals = sleepNightly.dur.filter((d) => d.value != null && isFinite(d.value)).map((d) => d.value as number);
+    const base = vals.length ? median(vals) : 0;
+    const byTag: Record<string, number[]> = {};
+    for (const d of sleepNightly.dur) {
+      if (d.value == null || !isFinite(d.value)) continue;
+      const ts = new Date(d.date + 'T00:00:00Z').getTime();
+      const tag = tagAt(ts, tagStays)?.tag ?? null;
+      if (!tag) continue;
+      (byTag[tag] ||= []).push(d.value);
+    }
+    const out: Record<string, number> = {};
+    for (const [tag, arr] of Object.entries(byTag)) if (arr.length >= 3) out[tag] = mean(arr) - base;
+    return out;
+  }, [sleepNightly, tagStays]);
+
+  const onsetFc = useMemo<ScalarForecastResult>(() => {
+    const base = forecastScalarSeries(sleepNightly.onset, { horizonWeeks: 4, minHistory: 14, seasonal: true, revertWeeks: 8 });
+    return applyLocationDeviation(base, onsetLocDev, locState);
+  }, [sleepNightly, onsetLocDev, locState]);
+
+  const durFc = useMemo<ScalarForecastResult>(() => {
+    const base = forecastScalarSeries(sleepNightly.dur, { horizonWeeks: 4, minHistory: 14, seasonal: true, revertWeeks: 8 });
+    return applyLocationDeviation(base, durLocDev, locState);
+  }, [sleepNightly, durLocDev, locState]);
   const mealMotif = useMemo(
     () => (mealGroup ? predictScenarioMotifs(rawLogs, groups, mealGroup.id) : null),
     [mealGroup, rawLogs, groups]
@@ -336,15 +506,32 @@ export default function PredictPage() {
     () => (songGroup ? predictScenarioMotifs(rawLogs, groups, songGroup.id) : null),
     [songGroup, rawLogs, groups]
   );
-  const changePoints = useMemo(() => detectChangePoints(logsByGroup, groups), [logsByGroup, groups]);
   const regimes = useMemo(() => detectRegimes(logsByGroup, groups), [logsByGroup, groups]);
   // 阶段起伏预测：基于历史 regime 向前外推未来曲线（必须放在 regimes 之后）
   const forecast = useMemo(
     () => forecastFutureRegimes(regimes, groups, logsByGroup, { horizonWeeks: 16 }),
     [regimes, groups]
   );
-  const archetypes = useMemo(() => clusterDayArchetypes(dailyFeatures, groups, 4), [dailyFeatures, groups]);
-
+  // 事件历史实际频次（近 10 天，每日计数），画进事件预测曲线作精确历史段
+  const eventHistory = useMemo(() => {
+    const out: Record<string, { day: number; rate: number }[]> = {};
+    const today = new Date(); today.setUTCHours(0, 0, 0, 0);
+    const WIN = 10;
+    for (const g of groups) {
+      const logs = logsByGroup[g.id] || [];
+      const cnt = new Map<number, number>();
+      for (const l of logs) {
+        const d = new Date(l.event_at); d.setUTCHours(0, 0, 0, 0);
+        const off = Math.round((d.getTime() - today.getTime()) / 86400000);
+        if (off < -WIN || off > 0) continue;
+        cnt.set(off, (cnt.get(off) || 0) + 1);
+      }
+      const arr: { day: number; rate: number }[] = [];
+      for (let off = -WIN; off <= 0; off++) arr.push({ day: off, rate: cnt.get(off) || 0 });
+      out[g.id] = arr;
+    }
+    return out;
+  }, [groups, logsByGroup]);
   const songArtist = (id: string) => musicById[id]?.artist || [];
   const songSing = (id: string) => tagByMusic[id]?.singability;
   const songLike = (id: string) => tagByMusic[id]?.likability;
@@ -437,44 +624,25 @@ export default function PredictPage() {
 
       {/* ── 下一次大餐吃什么 ── */}
       <Section title="🍽️ 下一次大餐吃什么">
-        {mealPred && mealPred.nextTop.length ? (
+        {mealCombined && mealCombined.items.length ? (
           <>
             <HeroCard
               icon="🍴"
-              title={mealPred.nextTop[0].title}
-              subtitle={mealHeadline(mealPred)}
+              title={mealCombined.items[0].title}
+              subtitle={
+                usingLocationMeal && currentTagCtx
+                  ? `📍 ${tagMeta(currentTagCtx.tag).icon}${currentTagCtx.tag}本地规律 · ${mealHeadline(mealMain!)}`
+                  : mealHeadline(mealMain!)
+              }
               accent={C.gold}
-              badge={`概率 ${(mealPred.nextTop[0].prob * 100).toFixed(0)}%`}
+              badge={`概率 ${(mealCombined.items[0].prob * 100).toFixed(0)}%`}
             />
-            {mealPredTag ? (
-              <div style={{ fontSize: 12, color: C.textSec, marginTop: -2, marginBottom: 12 }}>
-                📍 在{tagMeta(currentTagCtx!.tag).icon}{currentTagCtx!.tag}：本地规律最可能吃 <b style={{ color: C.text }}>{mealPredTag.nextTop[0]?.title ?? '—'}</b>
-              </div>
-            ) : currentTagCtx && (
-              <div style={{ fontSize: 12, color: C.textDim, marginTop: -2, marginBottom: 12 }}>
-                📍 在{tagMeta(currentTagCtx.tag).icon}{currentTagCtx.tag}：记录尚少或随机性高，沿用整体规律
-              </div>
-            )}
             <TimeLine timing={mealTiming} label="大餐" />
             <ProbList
-              items={mealPred.nextTop.slice(0, 3)}
+              items={mealCombined.items.slice(0, 3)}
               render={(e) => e.title}
-              meta={(e) => `${(e.prob * 100).toFixed(0)}% · 评分 ${mealRating(e.id)}`}
+              meta={(e) => `${(e.prob * 100).toFixed(0)}% · ${e.isNew ? '新餐' : `评分 ${mealRating(e.id)}`}`}
             />
-            {mealNovelty && mealNovelty.prob > 0 && (
-              <div style={{
-                padding: 14, borderRadius: 12, marginTop: 12,
-                background: 'linear-gradient(135deg, #22c55e22, ' + C.surface + ')',
-                border: '1px solid ' + C.borderLit,
-              }}>
-                <div style={{ fontSize: 13, color: C.text, fontWeight: 600, marginBottom: 4 }}>
-                  🆕 也有 {(mealNovelty.prob * 100).toFixed(0)}% 概率吃个「前所未见的新菜」
-                </div>
-                <div style={{ fontSize: 12, color: C.textSec, lineHeight: 1.6 }}>
-                  基于你过去 {mealNovelty.sessions} 顿大餐，有 {mealNovelty.newIntroductions} 顿是第一次吃这道菜。
-                </div>
-              </div>
-            )}
             {mealMotif && (
               <div style={{ fontSize: 12, color: C.textSec, marginTop: 12 }}>
                 🎲 大餐常伴随：
@@ -483,7 +651,7 @@ export default function PredictPage() {
                   : '无明显关联活动'}
               </div>
             )}
-            <RecencyList ranking={mealPred.ranking.slice(0, 5)} verb="吃过" emptyStyle={emptyStyle} />
+            <RecencyList ranking={mealMain!.ranking.slice(0, 5)} verb="吃过" emptyStyle={emptyStyle} />
           </>
         ) : (
           <p style={emptyStyle}>还没有「大餐」事件记录</p>
@@ -492,26 +660,28 @@ export default function PredictPage() {
 
       {/* ── 下一次歌唱什么 ── */}
       <Section title="🎤 下一场可能唱的歌单">
-        {songPred && songPred.nextTop.length ? (
+        {songMain && songMain.nextTop.length ? (
           <>
             <HeroCard
               icon="🎵"
-              title={songPred.nextTop[0].title}
+              title={songMain.nextTop[0].title}
               subtitle={
-                songArtist(songPred.nextTop[0].id).length
-                  ? `${songArtist(songPred.nextTop[0].id).join(' / ')} · ${songHeadline(songPred)}`
-                  : songHeadline(songPred)
+                usingLocationSong && currentTagCtx
+                  ? `📍 兼顾${tagMeta(currentTagCtx.tag).icon}${currentTagCtx.tag}本地偏置 · ${songHeadline(songMain)}`
+                  : (songArtist(songMain.nextTop[0].id).length
+                      ? `${songArtist(songMain.nextTop[0].id).join(' / ')} · ${songHeadline(songMain)}`
+                      : songHeadline(songMain))
               }
               accent={C.purple}
-              badge={songSing(songPred.nextTop[0].id) != null ? `唱 ${songSing(songPred.nextTop[0].id)}` : `${(songPred.nextTop[0].prob * 100).toFixed(0)}%`}
+              badge={songSing(songMain.nextTop[0].id) != null ? `唱 ${songSing(songMain.nextTop[0].id)}` : `${(songMain.nextTop[0].prob * 100).toFixed(0)}%`}
             />
-            {songPredTag ? (
+            {usingLocationSong && currentTagCtx ? (
               <div style={{ fontSize: 12, color: C.textSec, marginTop: -2, marginBottom: 12 }}>
-                📍 在{tagMeta(currentTagCtx!.tag).icon}{currentTagCtx!.tag}：本地规律最可能唱 <b style={{ color: C.text }}>{songPredTag.nextTop[0]?.title ?? '—'}</b>
+                📍 歌单以整体唱歌规律为主，并融入当前位置 {tagMeta(currentTagCtx.tag).icon}{currentTagCtx.tag} 的本地偏置（地区权重 40%）
               </div>
             ) : currentTagCtx && (
               <div style={{ fontSize: 12, color: C.textDim, marginTop: -2, marginBottom: 12 }}>
-                📍 在{tagMeta(currentTagCtx.tag).icon}{currentTagCtx.tag}：记录尚少或随机性高，沿用整体规律
+                📍 {tagMeta(currentTagCtx.tag).icon}{currentTagCtx.tag}：本地记录不足，仅用整体规律
               </div>
             )}
             <TimeLine timing={songTiming} label="唱K" />
@@ -543,7 +713,7 @@ export default function PredictPage() {
               <span style={{ fontSize: 12, color: C.textDim }}>首（1–60）</span>
             </div>
             <ProbList
-              items={songPred.nextTop.slice(0, songTopN)}
+              items={songMain.nextTop.slice(0, songTopN)}
               render={(e) => `${e.title}${songArtist(e.id).length ? ` — ${songArtist(e.id).join(' / ')}` : ''}`}
               meta={(e) => `${(e.prob * 100).toFixed(0)}%${songSing(e.id) != null ? ` · 唱${songSing(e.id)}` : ''}${songLike(e.id) != null ? ` ♥${songLike(e.id)}` : ''}`}
             />
@@ -560,7 +730,7 @@ export default function PredictPage() {
                   : '无明显关联活动'}
               </div>
             )}
-            <RecencyList ranking={songPred.ranking.slice(0, 5)} verb="唱过" emptyStyle={emptyStyle} />
+            <RecencyList ranking={songMain.ranking.slice(0, 5)} verb="唱过" emptyStyle={emptyStyle} />
           </>
         ) : (
           <p style={emptyStyle}>还没有「歌 / 唱K」事件记录</p>
@@ -570,11 +740,12 @@ export default function PredictPage() {
       {/* ── 事件关联（树图/关系图） ── */}
       <Section title="🔗 事件关联">
         {deps.length ? (
-          <>
-            <DependencyGraph groups={groups} deps={deps} />
-          </>
+          <DependencyGraph groups={groups} deps={deps} />
         ) : (
           <p style={emptyStyle}>暂未发现明显的跨事件关联（或数据不足）</p>
+        )}
+        {(domainTriad.moodSleep != null || domainTriad.moodLoc || domainTriad.sleepLoc) && (
+          <TriadRows triad={domainTriad} />
         )}
       </Section>
 
@@ -615,62 +786,45 @@ export default function PredictPage() {
         )}
       </Section>
 
-      {/* ── 习惯漂移 / 阶段起伏 / 位置状态（预测） ── */}
-      <Section title="📉 习惯漂移 / 阶段起伏 / 位置状态（预测）">
-        {changePoints.length ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {changePoints.map((cp) => (
-              <div key={cp.groupId} style={{ padding: '11px 14px', borderRadius: 12, background: C.surface, border: '1px solid ' + C.border }}>
-                <div style={{ fontSize: 13, color: C.text, fontWeight: 600 }}>
-                  {cp.groupIcon} {cp.groupName}：自 {cp.date} 起频率{cp.drop ? '下降' : '上升'} {(Math.abs(cp.relChange) * 100).toFixed(0)}%
-                </div>
-                <div style={{ fontSize: 12, color: C.textSec, marginTop: 4 }}>
-                  {cp.beforeRate.toFixed(2)} 次/天 → {cp.afterRate.toFixed(2)} 次/天（{cp.drop ? '变冷' : '变热'}）
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p style={emptyStyle}>暂未发现明显的习惯频率突变（或数据不足）</p>
-        )}
+      {/* ── 阶段起伏 / 位置状态（预测） ── */}
+      <Section title="📉 阶段起伏 / 位置状态（预测）">
         {locState && locState.weeks.length > 1 && (
           <>
-            <div style={{ fontSize: 12, color: C.textSec, margin: '16px 0 10px', fontWeight: 600 }}>📍 位置状态预测（未来 16 周身处各地点的概率）</div>
+            <div style={{ fontSize: 12, color: C.textSec, margin: '0 0 10px', fontWeight: 600 }}>📍 位置状态预测（未来 16 周身处各地点的概率）</div>
             <LocationStateChart loc={locState} />
           </>
         )}
         {forecast.series.length > 0 && (
           <>
             <div style={{ fontSize: 12, color: C.textSec, margin: '16px 0 10px', fontWeight: 600 }}>🔮 未来事件起伏预测</div>
-            <ForecastChart forecast={forecast} />
+            <ForecastChart forecast={forecast} history={eventHistory} />
           </>
         )}
-      </Section>
-
-      {/* ── 日常原型聚类 ── */}
-      <Section title="🗓️ 日常原型">
-        {archetypes.archetypes.length ? (
+        {moodFc.hasEnough && (
           <>
-            {archetypes.nextClusterLabel && (
-              <div style={{ padding: '10px 14px', borderRadius: 12, marginBottom: 12, background: C.surface, border: '1px solid ' + C.borderLit, fontSize: 13, color: C.text }}>
-                明天大概率：<b style={{ color: C.accentLt }}>{archetypes.nextClusterLabel}</b>
-                {' '}（典型：{archetypes.archetypes.find((a) => a.label === archetypes.nextClusterLabel)?.topGroups.map((t) => t.name).join(' · ')}）
-              </div>
-            )}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: 10 }}>
-              {archetypes.archetypes.map((a) => (
-                <div key={a.id} style={{ padding: 12, borderRadius: 12, background: C.surface, border: '1px solid ' + C.border }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>
-                    {a.label} <span style={{ fontSize: 11, color: C.textDim, fontWeight: 400 }}>· {a.size}天</span>
-                  </div>
-                  <div style={{ fontSize: 11, color: C.textSec, marginTop: 5 }}>{a.topGroups.map((t) => `${t.icon}${t.name}`).join(' ')}</div>
-                  {a.avgMood !== undefined && <div style={{ fontSize: 11, color: C.textDim, marginTop: 2 }}>均心情 {a.avgMood.toFixed(1)}</div>}
-                </div>
-              ))}
-            </div>
+            <div style={{ fontSize: 12, color: C.textSec, margin: '20px 0 10px', fontWeight: 600 }}>💗 心情趋势预测</div>
+            <ScalarChart title="心情评分" result={moodFc} color="#a855f7" unit="分" fmt={(v) => v.toFixed(1) + ' 分'} />
           </>
-        ) : (
-          <p style={emptyStyle}>天数不足，无法聚类（至少需要 4 天）</p>
+        )}
+        {onsetFc.hasEnough && durFc.hasEnough && (
+          <>
+            <div style={{ fontSize: 12, color: C.textSec, margin: '20px 0 10px', fontWeight: 600 }}>😴 睡眠趋势预测</div>
+            <ScalarChart
+              title="入睡时间"
+              result={onsetFc}
+              color="#60a5fa"
+              unit="时"
+              invertY
+              fmt={(v) => {
+                const totalMin = (((v % 24) + 24) % 24) * 60;
+                const hh = Math.floor(totalMin / 60);
+                const m = Math.round(totalMin % 60);
+                return `${String(hh).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+              }}
+            />
+            <div style={{ height: 14 }} />
+            <ScalarChart title="睡眠时长" result={durFc} color="#34d399" unit="小时" fmt={(v) => `${v.toFixed(1)} 小时`} />
+          </>
         )}
       </Section>
 
@@ -816,7 +970,7 @@ export default function PredictPage() {
         <p>下一个对象：一阶 Markov 转移 × 偏好评分（大餐评分 / 歌曲 喜欢度×能唱度）</p>
         <p>跨事件：日频 Pearson 相关 + 条件共现（关系图展示）</p>
         <p>位置：停留段一阶 Markov 转移（预测换地方时间/去向）+ 分地点事件节奏 + 位置状态外推（与事件起伏并列）</p>
-        <p>高级：跨域联动(心情/睡眠/位置) + 生存分析(危险率) + 场景motif + 习惯漂移 + K-means日常原型 + 阶段起伏外推(未来预测)</p>
+        <p>高级：跨域联动(心情/睡眠/位置 两两关系) + 生存分析(危险率) + 场景motif + 阶段起伏外推(未来预测) + 心情/睡眠趋势预测</p>
         <p>Powered by DataHub</p>
       </footer>
     </div>
@@ -1017,7 +1171,7 @@ function DependencyGraph({ groups, deps }: { groups: EventGroupLite[]; deps: Gro
 }
 
 function DependencyDetail({ dep, onBack }: { dep: GroupDep; onBack: () => void }) {
-  const strength = Math.max(Math.abs(dep.corr), dep.pGivenA, dep.pGivenB, Math.min(1, Math.abs(dep.assoc)));
+  const strength = Math.max(Math.abs(dep.liftBA - 1), Math.abs(dep.liftAB - 1), Math.abs(dep.corr));
   return (
     <div>
       <div style={{ fontSize: 13, color: C.text, fontWeight: 600, marginBottom: 10 }}>
@@ -1027,6 +1181,8 @@ function DependencyDetail({ dep, onBack }: { dep: GroupDep; onBack: () => void }
       <Row label="关联方向" value={assocLabel(dep.assoc)} highlight />
       <Row label={`发生 ${dep.aName} 后 ${dep.windowDays} 天内出现 ${dep.bName}`} value={`${(dep.pGivenA * 100).toFixed(0)}%`} />
       <Row label={`发生 ${dep.bName} 后 ${dep.windowDays} 天内出现 ${dep.aName}`} value={`${(dep.pGivenB * 100).toFixed(0)}%`} />
+      <Row label={`${dep.aName} 期间 ${dep.bName} 日均发生率`} value={`×${(dep.liftAB * 100).toFixed(0)}%（相对平时）`} />
+      <Row label={`${dep.bName} 期间 ${dep.aName} 日均发生率`} value={`×${(dep.liftBA * 100).toFixed(0)}%（相对平时）`} />
       <Row label="共现次数" value={`${dep.jointCount} 次`} />
       <Row label="关联强度" value={`${(strength * 100).toFixed(0)}%`} />
     </div>
@@ -1062,8 +1218,28 @@ function maSmooth(points: { x: number; y: number }[], window = 7) {
   return out;
 }
 
+// 把「各地点相对基线的偏离」按位置预测的逐周概率加权，叠加到标量预测的未来点上。
+// 历史点保持精确（不动），只调未来点的 value，从而让睡眠/心情随「换地方」一起起伏。
+function applyLocationDeviation(
+  base: ScalarForecastResult,
+  tagDev: Record<string, number>,
+  locState: { weeks: { dist: Record<string, number> }[] } | null
+): ScalarForecastResult {
+  const fut = base.points
+    .filter((p) => p.isFuture)
+    .map((p) => {
+      const w = Math.min(Math.ceil(p.dayOffset / 7), Math.max(0, (locState?.weeks.length ?? 1) - 1));
+      const dist = locState?.weeks[w]?.dist ?? {};
+      let locDev = 0;
+      for (const [tag, prob] of Object.entries(dist)) locDev += (tagDev[tag] ?? 0) * prob;
+      return { ...p, value: (p.value ?? 0) + locDev };
+    });
+  const hist = base.points.filter((p) => !p.isFuture);
+  return { ...base, points: [...hist, ...fut] };
+}
+
 /* ── 阶段起伏预测图：历史 regime 向前外推 → 7 天移动平均 + Catmull-Rom 样条平滑 + 悬停探测 ── */
-function ForecastChart({ forecast }: { forecast: ForecastResult }) {
+function ForecastChart({ forecast, history }: { forecast: ForecastResult; history?: Record<string, { day: number; rate: number }[]> }) {
   const [normalize, setNormalize] = useState(false); // 默认统一刻度（/天），看实际量级
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [hoverDay, setHoverDay] = useState<number | null>(null);
@@ -1074,13 +1250,21 @@ function ForecastChart({ forecast }: { forecast: ForecastResult }) {
   const plotH = H - padT - padB;
   const horizon = forecast.horizonWeeks;
   const horizonDays = horizon * 7;
+  const HIST_DAYS = 10;
+  const minDay = -HIST_DAYS;
+  const span = horizonDays - minDay;
 
   const palette = ['#818cf8', '#4ade80', '#eab308', '#f87171', '#a855f7', '#22d3ee', '#fb923c', '#f472b6', '#34d399', '#60a5fa'];
   const colorOf = (s: ForecastSeries, i: number) => (s.color && s.color.startsWith('#')) ? s.color : palette[i % palette.length];
 
+  // 历史实际频次峰值（近 HIST_DAYS 天），用于统一纵轴
+  let histMaxRate = 0;
+  if (history) { for (const arr of Object.values(history)) for (const p of arr) if (p.rate > histMaxRate) histMaxRate = p.rate; }
+  const yTopGlobal = Math.max(forecast.maxRate, histMaxRate, 1e-6);
+
   const seriesMax = (s: ForecastSeries) => Math.max(1e-6, ...s.forecast.map((p) => p.rate));
-  const xAt = (d: number) => padL + (d / horizonDays) * plotW;
-  const yTopFor = (s: ForecastSeries) => (normalize ? seriesMax(s) : forecast.maxRate);
+  const xAt = (d: number) => padL + ((d - minDay) / span) * plotW;
+  const yTopFor = (s: ForecastSeries) => (normalize ? seriesMax(s) : yTopGlobal);
   const yAt = (rate: number, s: ForecastSeries) => {
     const top = yTopFor(s);
     return padT + plotH - (Math.min(rate, top) / top) * plotH;
@@ -1093,6 +1277,9 @@ function ForecastChart({ forecast }: { forecast: ForecastResult }) {
     const pts = smoothed.map((p) => ({ ...p, y: yAt(p.y, s) }));
     return { mean: smoothPath(pts), dots: smoothed.map((p, d) => ({ day: d, x: p.x, y: yAt(p.y, s), rate: raw[d].y })) };
   };
+  // 精确折线（不做平滑/回归），用于历史实际频次
+  const lineThrough = (arr: { x: number; y: number }[]) =>
+    arr.length ? arr.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ') : '';
 
   // 预计算各系列（按天）的克里金路径 + 置信带 + 逐日点，供绘制与悬停共用
   const seriesPaths = useMemo(
@@ -1103,7 +1290,7 @@ function ForecastChart({ forecast }: { forecast: ForecastResult }) {
   const yTicks = 4;
   const yGrid = Array.from({ length: yTicks + 1 }, (_, i) => {
     const frac = i / yTicks;
-    return { y: padT + plotH - frac * plotH, val: normalize ? frac : forecast.maxRate * frac };
+    return { y: padT + plotH - frac * plotH, val: normalize ? frac : yTopGlobal * frac };
   });
 
   // X 刻度：每隔几周标一个日期（直接用今天 + w*7 天算，避免依赖每日采样数组下标）
@@ -1119,12 +1306,17 @@ function ForecastChart({ forecast }: { forecast: ForecastResult }) {
     const x = ((e.clientX - rect.left) / rect.width) * W;
     if (x < padL || x > padL + plotW) { setHoverDay(null); return; }
     const frac = (x - padL) / plotW;
-    setHoverDay(Math.max(0, Math.min(horizonDays, Math.round(frac * horizonDays))));
+    // x 轴范围是 [minDay, horizonDays]；但 dots 仅覆盖预测段 [0, maxIdx]，历史段(<0)不挂悬停点
+    const day = minDay + frac * span;
+    const maxIdx = seriesPaths.length ? seriesPaths[0].dots.length - 1 : 0;
+    const d = Math.round(day);
+    if (d < 0 || d > maxIdx) { setHoverDay(null); return; }
+    setHoverDay(d);
   };
 
   const visible = forecast.series.filter((s) => !hidden.has(s.groupId));
-  const tipRows = hoverDay != null
-    ? seriesPaths.map(({ s, dots }) => ({ s, v: dots[hoverDay].rate })).sort((a, b) => b.v - a.v)
+  const tipRows = hoverDay != null && hoverDay >= 0 && seriesPaths.length > 0 && hoverDay < seriesPaths[0].dots.length
+    ? seriesPaths.map(({ s, dots }) => (dots[hoverDay] ? { s, v: dots[hoverDay].rate } : null)).filter((r): r is { s: ForecastSeries; v: number } => r != null).sort((a, b) => b.v - a.v)
     : [];
 
   const toggleStyle = (active: boolean): React.CSSProperties => ({
@@ -1143,7 +1335,7 @@ function ForecastChart({ forecast }: { forecast: ForecastResult }) {
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 12, color: C.textSec }}>纵轴：预测次/天（从今天起 {horizonDays} 天）</span>
+        <span style={{ fontSize: 12, color: C.textSec }}>纵轴：预测次/天（近 {HIST_DAYS} 天实际 + 未来 {horizonDays} 天预测）</span>
         <button onClick={() => setNormalize((v) => !v)} style={toggleStyle(normalize)}>
           {normalize ? '相对自身峰值（看起伏形状）' : '统一刻度（看量级）'}
         </button>
@@ -1173,9 +1365,22 @@ function ForecastChart({ forecast }: { forecast: ForecastResult }) {
           </g>
         ))}
 
-        {/* 今天标记（左边缘 = 第 0 周） */}
-        <line x1={padL} y1={padT} x2={padL} y2={padT + plotH} stroke={C.accentLt} strokeWidth={1.2} strokeDasharray="4 3" opacity={0.6} />
-        <text x={padL + 4} y={padT - 3} fontSize={10} fill={C.accentLt}>今天</text>
+        {/* 今天标记（第 0 天） */}
+        <line x1={xAt(0)} y1={padT} x2={xAt(0)} y2={padT + plotH} stroke={C.accentLt} strokeWidth={1.2} strokeDasharray="4 3" opacity={0.6} />
+        <text x={xAt(0) + 4} y={padT - 3} fontSize={10} fill={C.accentLt}>今天</text>
+        <text x={padL + 2} y={H - 8} fontSize={10} fill={C.textDim}>10天前</text>
+
+        {/* 历史实际频次（近 10 天，精确实线，未平滑） */}
+        {visible.map((s) => {
+          const arr = history?.[s.groupId];
+          if (!arr || !arr.length) return null;
+          const col = colorOf(s, forecast.series.indexOf(s));
+          const isDim = hoverGroupId != null && hoverGroupId !== s.groupId;
+          return (
+            <path key={'h-' + s.groupId} d={lineThrough(arr.map((p) => ({ x: xAt(p.day), y: yAt(p.rate, s) })))}
+              fill="none" stroke={col} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" opacity={isDim ? 0.12 : 0.85} />
+          );
+        })}
 
         {/* 平滑预测曲线：7 天移动平均 + Catmull-Rom 样条；悬停时高亮当前线，其余线淡化 */}
         {visible.map((s) => {
@@ -1197,14 +1402,15 @@ function ForecastChart({ forecast }: { forecast: ForecastResult }) {
         })}
 
         {/* 悬停竖向引导线 + 数据点 */}
-        {hoverDay != null && (() => {
+        {hoverDay != null && seriesPaths.length > 0 && hoverDay < seriesPaths[0].dots.length && (() => {
           const x = xAt(hoverDay);
           return (
             <g>
               <line x1={x} y1={padT} x2={x} y2={padT + plotH} stroke={C.textSec} strokeWidth={1} opacity={0.5} />
               {seriesPaths.map(({ s, dots }) => {
-                const y = dots[hoverDay].y;
-                return <circle key={s.groupId} cx={x} cy={y} r={3} fill={colorOf(s, forecast.series.indexOf(s))} stroke={C.surface} strokeWidth={1.5} />;
+                const dot = dots[hoverDay];
+                if (!dot) return null;
+                return <circle key={s.groupId} cx={x} cy={dot.y} r={3} fill={colorOf(s, forecast.series.indexOf(s))} stroke={C.surface} strokeWidth={1.5} />;
               })}
             </g>
           );
@@ -1255,13 +1461,150 @@ function ForecastChart({ forecast }: { forecast: ForecastResult }) {
       </div>
 
       <p style={{ fontSize: 11, color: C.textDim, marginTop: 8 }}>
-        按历史「工作日 / 周末 / 节假日」各自频次加权外推未来 {horizonDays} 天；先 7 天移动平均降噪，再用 Catmull-Rom 样条连成平滑曲线。悬停看某天类型与各线预测次/天。
+        近 {HIST_DAYS} 天实际频次（实线，精确未平滑）+ 未来 {horizonDays} 天预测（按历史「工作日 / 周末 / 节假日」频次加权外推，7 天移动平均 + Catmull-Rom 样条）。悬停看某天类型与各线预测次/天。
       </p>
     </div>
   );
 }
 
 /* ── 子组件 ── */
+
+/* 三者两两关系图（心情 / 睡眠 / 位置）：仿事件关联，边粗细=关系强度，颜色表方向。 */
+/* 三者两两关系（心情/睡眠/位置）：以关系行形式并入「事件关联」区，不单独画三角图 */
+function TriadRows({ triad }: { triad: DomainTriad }) {
+  const color = (v: number) => (v > 0.12 ? '#4ade80' : v < -0.12 ? '#f87171' : '#9ca3af');
+  const rel = (v: number) => (v > 0.12 ? '同向' : v < -0.12 ? '反向' : '无关');
+  const rows = [
+    {
+      key: 'ms', a: '💗', b: '😴', label: '心情 ↔ 睡眠',
+      text: triad.moodSleep != null ? `Pearson r = ${triad.moodSleep.toFixed(2)}（${rel(triad.moodSleep)}）` : '数据不足',
+      v: triad.moodSleep ?? 0,
+    },
+    {
+      key: 'ml', a: '💗', b: '📍', label: '心情 ↔ 位置',
+      text: triad.moodLoc ? `在 ${triad.moodLoc.tag} ${triad.moodLoc.z > 0 ? '偏高' : '偏低'} ${Math.abs(triad.moodLoc.z).toFixed(1)}σ` : '数据不足',
+      v: triad.moodLoc?.z ?? 0,
+    },
+    {
+      key: 'sl', a: '😴', b: '📍', label: '睡眠 ↔ 位置',
+      text: triad.sleepLoc ? `在 ${triad.sleepLoc.tag} ${triad.sleepLoc.z > 0 ? '偏长' : '偏短'} ${Math.abs(triad.sleepLoc.z).toFixed(1)}σ` : '数据不足',
+      v: triad.sleepLoc?.z ?? 0,
+    },
+  ];
+  return (
+    <div style={{ marginTop: 16 }}>
+      <div style={{ fontSize: 12, color: C.textSec, fontWeight: 600, marginBottom: 8 }}>💞 心情 / 睡眠 / 位置 两两关系</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {rows.map((r) => (
+          <div key={r.key} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderRadius: 10, background: C.surface, border: '1px solid ' + C.border }}>
+            <span style={{ fontSize: 16 }}>{r.a}</span>
+            <span style={{ fontSize: 14, color: C.textSec }}>↔</span>
+            <span style={{ fontSize: 16 }}>{r.b}</span>
+            <span style={{ flex: 1, fontSize: 13, color: C.text }}>{r.label}</span>
+            <span style={{ fontSize: 12, color: color(r.v), width: 180, textAlign: 'right' }}>{r.text}</span>
+          </div>
+        ))}
+      </div>
+      <p style={{ fontSize: 11, color: C.textDim, marginTop: 6 }}>
+        心情↔睡眠为 Pearson 相关；心情/睡眠↔位置为相对整体基线偏离最大的地点（|z|≥0.4σ 才计为有关系）。
+      </p>
+    </div>
+  );
+}
+
+/* 标量时间序列预测图：近 10 天实际值（精确实线）+ 未来预测（虚线 + Catmull-Rom 平滑），悬停看某天值。 */
+function ScalarChart({
+  title, result, color, unit, fmt, invertY = false,
+}: { title: string; result: ScalarForecastResult; color: string; unit: string; fmt: (v: number) => string; invertY?: boolean }) {
+  const [hover, setHover] = useState<number | null>(null);
+  const DAY = 86400000;
+  const W = 720, H = 240, padL = 46, padR = 14, padT = 14, padB = 24;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const ALL = 10; // 历史只画最近 10 天
+  // 历史（精确实际值，不做平滑）+ 未来预测
+  const pts = result.points.filter((p) => !p.isFuture || p.dayOffset >= 0);
+  const hist = pts.filter((p) => !p.isFuture && p.dayOffset >= -ALL);
+  const fut = pts.filter((p) => p.isFuture);
+  if (!hist.length && !fut.length) return null;
+  const xs = [...hist, ...fut].map((p) => p.dayOffset);
+  const minX = hist.length ? Math.min(...xs, -ALL) : Math.min(...xs, 0);
+  const maxX = Math.max(...xs);
+  const ys = [...hist, ...fut].map((p) => p.value);
+  let yMin = Math.min(...ys), yMax = Math.max(...ys);
+  const ypad = (yMax - yMin) * 0.1 || 1;
+  yMin -= ypad; yMax += ypad;
+  const xAt = (d: number) => padL + ((d - minX) / (maxX - minX || 1)) * plotW;
+  // invertY=true：值越小越靠上（如入睡时间——早睡在上、晚睡在下），更符合直觉
+  const yAt = (v: number) => invertY
+    ? padT + ((v - yMin) / (yMax - yMin || 1)) * plotH
+    : padT + plotH - ((v - yMin) / (yMax - yMin || 1)) * plotH;
+  const lineThrough = (arr: { x: number; y: number }[]) =>
+    arr.length ? arr.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ') : '';
+  const histPath = lineThrough(hist.map((p) => ({ x: xAt(p.dayOffset), y: yAt(p.value) })));
+  const futPath = smoothPath(fut.map((p) => ({ x: xAt(p.dayOffset), y: yAt(p.value) })));
+
+  const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * W;
+    if (x < padL || x > padL + plotW) { setHover(null); return; }
+    const d = minX + ((x - padL) / plotW) * (maxX - minX);
+    let best = pts[0], bd = Infinity;
+    for (const p of pts) { const dd = Math.abs(p.dayOffset - d); if (dd < bd) { bd = dd; best = p; } }
+    setHover(best.dayOffset);
+  };
+  const hov = hover != null ? pts.find((p) => p.dayOffset === hover) : null;
+
+  const yTicks = 4;
+  const yGrid = Array.from({ length: yTicks + 1 }, (_, i) => {
+    const frac = i / yTicks;
+    return { y: invertY ? padT + frac * plotH : padT + plotH - frac * plotH, val: yMin + frac * (yMax - yMin) };
+  });
+  const tickStep = Math.max(1, Math.round((maxX - minX) / 8));
+  const xTicks: { d: number; label: string }[] = [];
+  for (let d = Math.ceil(minX / tickStep) * tickStep; d <= maxX; d += tickStep) {
+    const dt = new Date(Date.now() + d * DAY);
+    xTicks.push({ d, label: `${dt.getMonth() + 1}/${dt.getDate()}` });
+  }
+
+  return (
+    <div>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', background: C.surface, borderRadius: 14, border: '1px solid ' + C.border, cursor: 'crosshair' }}
+        onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+        {yGrid.map((g, i) => (
+          <g key={i}>
+            <line x1={padL} y1={g.y} x2={W - padR} y2={g.y} stroke={C.border} strokeWidth={1} strokeDasharray="3 4" opacity={0.22} />
+            <text x={padL - 6} y={g.y + 3} textAnchor="end" fontSize={10} fill={C.textDim}>{fmt(g.val)}</text>
+          </g>
+        ))}
+        {xTicks.map((tk, i) => (
+          <g key={i}>
+            <line x1={xAt(tk.d)} y1={padT} x2={xAt(tk.d)} y2={padT + plotH} stroke={C.border} strokeWidth={1} strokeDasharray="2 4" opacity={0.3} />
+            <text x={xAt(tk.d)} y={H - 8} textAnchor="middle" fontSize={10} fill={C.textDim}>{tk.label}</text>
+          </g>
+        ))}
+        <line x1={xAt(0)} y1={padT} x2={xAt(0)} y2={padT + plotH} stroke={C.accentLt} strokeWidth={1.2} strokeDasharray="4 3" opacity={0.6} />
+        <text x={xAt(0) + 4} y={padT - 3} fontSize={10} fill={C.accentLt}>今天</text>
+        {histPath && <path d={histPath} fill="none" stroke={color} strokeWidth={1.8} strokeLinejoin="round" strokeLinecap="round" />}
+        {futPath && <path d={futPath} fill="none" stroke={color} strokeWidth={1.8} strokeDasharray="5 4" strokeLinejoin="round" strokeLinecap="round" strokeOpacity={0.9} />}
+        {hov && (
+          <g>
+            <line x1={xAt(hov.dayOffset)} y1={padT} x2={xAt(hov.dayOffset)} y2={padT + plotH} stroke={C.textSec} strokeWidth={1} opacity={0.5} />
+            <circle cx={xAt(hov.dayOffset)} cy={yAt(hov.value)} r={3.5} fill={color} stroke={C.surface} strokeWidth={1.5} />
+          </g>
+        )}
+      </svg>
+      {hov && (
+        <div style={{ fontSize: 11, color: C.textSec, marginTop: 6 }}>
+          {new Date(Date.now() + hov.dayOffset * DAY).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })} · {hov.dayOffset === 0 ? '今天' : hov.dayOffset > 0 ? `未来第 ${hov.dayOffset} 天` : `${Math.abs(hov.dayOffset)} 天前`}：<b style={{ color: C.text }}>{fmt(hov.value)}</b>
+        </div>
+      )}
+      <p style={{ fontSize: 11, color: C.textDim, marginTop: 6 }}>
+        {title}：实线=近 {ALL} 天实际值（精确未平滑），虚线=未来 {Math.round(maxX / 7)} 周预测（Catmull-Rom 平滑，无模糊区间）。睡眠按工作日/周末节律外推，心情由睡眠时长+所在地驱动。
+      </p>
+    </div>
+  );
+}
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section style={{ marginBottom: 36 }}>

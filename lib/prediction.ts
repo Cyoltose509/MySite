@@ -105,8 +105,8 @@ export async function fetchHolidays(year: number): Promise<Set<string>> {
   }
 }
 
-const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
-const median = (xs: number[]) => {
+export const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
+export const median = (xs: number[]) => {
   if (!xs.length) return 0;
   const s = [...xs].sort((a, b) => a - b);
   const m = Math.floor(s.length / 2);
@@ -131,6 +131,15 @@ const pearson = (xs: number[], ys: number[]): number => {
   if (dx === 0 || dy === 0) return 0;
   return num / Math.sqrt(dx * dy);
 };
+/** 简单一元线性回归斜率：y 随 x 每增加 1 单位的变化量（cov/var）。 */
+export function linregSlope(xs: number[], ys: number[]): number {
+  const n = Math.min(xs.length, ys.length);
+  if (n < 2) return 0;
+  const mx = mean(xs), my = mean(ys);
+  let cov = 0, vx = 0;
+  for (let i = 0; i < n; i++) { const a = xs[i] - mx; cov += a * (ys[i] - my); vx += a * a; }
+  return vx > 1e-9 ? cov / vx : 0;
+}
 const bisect = (sorted: number[], t: number): number => {
   let lo = 0, hi = sorted.length;
   while (lo < hi) { const mid = (lo + hi) >> 1; if (sorted[mid] < t) lo = mid + 1; else hi = mid; }
@@ -326,7 +335,7 @@ export function computeTiming(logs: EventLogLite[]): TimingStat {
 
 /* ── 2) 下一个具体对象（会话级 Markov 转移 × 偏好评分） ── */
 export interface EntityRank { id: string; title: string; count: number; lastAt: string; daysSince: number; }
-export interface MarkovItem { id: string; title: string; prob: number; fromTransition: boolean; pref: number | null; }
+export interface MarkovItem { id: string; title: string; prob: number; fromTransition: boolean; pref: number | null; isNew?: boolean; }
 export interface EntityMarkov {
   lastEntity: { id: string; title: string } | null; // 仅展示用（上次会话里最后一个对象）
   lastSessionSize: number;                            // 上次会话涉及的对象数（唱K 常为几十）
@@ -507,6 +516,37 @@ export function predictNextEntityMarkov(
   return { lastEntity, lastSessionSize: lastSessionIds.length, nextTop, ranking, totalSessions: sessions.length, usedMarkov };
 }
 
+/**
+ * 融合「全局规律」与「某地区本地规律」：地区作为偏置但不过度主导。
+ * 融合概率 = (1-w)·pGlobal + w·pLocal；缺失侧按 0 处理（合并后归一化，保持类内语义）。
+ * - w 取较小值（如 0.4）→ 地区只起微调作用，全局数据始终保留（满足"不能只看该地区数据"）。
+ * - 全局未出现、本地才有的候选，仅以 w·pLocal 进入，但仍被归一化夹在合理占比。
+ */
+export function blendMarkovResults(
+  global: EntityMarkov,
+  local: EntityMarkov | null,
+  w = 0.4
+): EntityMarkov {
+  if (!local || w <= 0) return global;
+  if (w >= 1) return local;
+  const localById = new Map(local.nextTop.map((it) => [it.id, it]));
+  const seen = new Set<string>();
+  const items: MarkovItem[] = global.nextTop.map((g) => {
+    seen.add(g.id);
+    const lp = localById.get(g.id)?.prob ?? 0;
+    return { ...g, prob: (1 - w) * g.prob + w * lp };
+  });
+  // 本地特有候选（全局未出现）→ 仅以地区权重进入
+  for (const l of local.nextTop) {
+    if (seen.has(l.id)) continue;
+    items.push({ ...l, prob: w * l.prob });
+  }
+  const sum = items.reduce((a, b) => a + b.prob, 0) || 1;
+  for (const it of items) it.prob = it.prob / sum;
+  items.sort((a, b) => (b.prob ?? 0) - (a.prob ?? 0));
+  return { ...global, nextTop: items.slice(0, 80) };
+}
+
 /* ── 2b) 新颖性预测：下一次活动会不会是「前所未有的新对象」 ── */
 // 把每个 event_log 视为一次会话（去重对象集合），按时间排序
 function buildSessions(logs: EventLogLite[]): { at: number; ids: string[] }[] {
@@ -622,16 +662,31 @@ export function computeGroupDependencies(
   windowDays = 2
 ): GroupDep[] {
   const W = windowDays * DAY;
+  const dayKey = (iso: string) => new Date(iso).toISOString().slice(0, 10);
   const out: GroupDep[] = [];
 
-  // 全局去重天数（所有事件组的并集），用作"随机基线"的分母
-  const allDaySet = new Set<string>();
-  for (const g of groups) {
-    for (const l of (logsByGroup[g.id] || [])) {
-      allDaySet.add(new Date(l.event_at).toISOString().slice(0, 10));
+  const dailyCount = (logs: EventLogLite[]) => {
+    const m = new Map<string, number>();
+    for (const l of logs) { const k = dayKey(l.event_at); m.set(k, (m.get(k) || 0) + 1); }
+    return m;
+  };
+  const timesOf = (logs: EventLogLite[]) => logs.map((l) => new Date(l.event_at).getTime()).sort((x, y) => x - y);
+  // 观测窗口跨度（天），作为"窗内 vs 窗外"发生率的分母
+  const spanDays = (la: EventLogLite[], lb: EventLogLite[]) => {
+    let mn = Infinity, mx = -Infinity;
+    for (const l of [...la, ...lb]) { const t = new Date(l.event_at).getTime(); if (t < mn) mn = t; if (t > mx) mx = t; }
+    return mn === Infinity ? 1 : Math.max(1, Math.round((mx - mn) / DAY) + 1);
+  };
+  // 存在性共现（详情面板展示 P(B|A) 等），按事件时刻 ±W 匹配
+  const matchCount = (times: number[], ref: number[]) => {
+    let c = 0;
+    for (const t of times) {
+      const idx = bisect(ref, t);
+      if ((idx < ref.length && Math.abs(ref[idx] - t) <= W) || (idx > 0 && Math.abs(ref[idx - 1] - t) <= W)) c++;
     }
-  }
-  const totalDays = allDaySet.size || 1;
+    return c;
+  };
+
   for (let i = 0; i < groups.length; i++) {
     for (let j = i + 1; j < groups.length; j++) {
       const A = groups[i], B = groups[j];
@@ -639,51 +694,60 @@ export function computeGroupDependencies(
       const lb = logsByGroup[B.id] || [];
       if (!la.length || !lb.length) continue;
 
-      // 日频聚合
-      const dayCount = (logs: EventLogLite[]) => {
-        const m: Record<string, number> = {};
-        for (const l of logs) { const k = new Date(l.event_at).toISOString().slice(0, 10); m[k] = (m[k] || 0) + 1; }
-        return m;
-      };
-      const ca = dayCount(la), cb = dayCount(lb);
-      const allDays = new Set([...Object.keys(ca), ...Object.keys(cb)]);
+      const ca = dailyCount(la), cb = dailyCount(lb);
+      const ta = timesOf(la), tb = timesOf(lb);
+
+      // 日频 Pearson（仅作辅助参考，对频率不平衡敏感）
+      const allDays = new Set([...ca.keys(), ...cb.keys()]);
       const days = [...allDays].sort();
-      const va = days.map((d) => ca[d] || 0);
-      const vb = days.map((d) => cb[d] || 0);
+      const va = days.map((d) => ca.get(d) || 0);
+      const vb = days.map((d) => cb.get(d) || 0);
       const corr = pearson(va, vb);
 
-      // 条件共现
-      const ta = la.map((l) => new Date(l.event_at).getTime()).sort((x, y) => x - y);
-      const tb = lb.map((l) => new Date(l.event_at).getTime()).sort((x, y) => x - y);
-      let matchedA = 0;
-      for (const t of ta) {
-        const idx = bisect(tb, t);
-        const near = (idx < tb.length && Math.abs(tb[idx] - t) <= W) ||
-          (idx > 0 && Math.abs(tb[idx - 1] - t) <= W);
-        if (near) matchedA++;
-      }
-      let matchedB = 0;
-      for (const t of tb) {
-        const idx = bisect(ta, t);
-        const near = (idx < ta.length && Math.abs(ta[idx] - t) <= W) ||
-          (idx > 0 && Math.abs(ta[idx - 1] - t) <= W);
-        if (near) matchedB++;
-      }
+      const matchedA = matchCount(ta, tb);
+      const matchedB = matchCount(tb, ta);
       const pGivenA = matchedA / ta.length;
       const pGivenB = matchedB / tb.length;
 
-      // 随机基线：随机一天落在某事件 ±window 窗口内的概率（事件日视为独立）
-      const daysA = new Set(la.map((l) => new Date(l.event_at).toISOString().slice(0, 10))).size;
-      const daysB = new Set(lb.map((l) => new Date(l.event_at).toISOString().slice(0, 10))).size;
-      const nullBA = 1 - Math.pow(1 - daysB / totalDays, 2 * windowDays + 1);
-      const nullAB = 1 - Math.pow(1 - daysA / totalDays, 2 * windowDays + 1);
-      const liftBA = nullBA > 0 ? pGivenA / nullBA : 1;
-      const liftAB = nullAB > 0 ? pGivenB / nullAB : 1;
-      // 关联方向：扣除随机基线后的提升，双向平均，裁剪到 [-2,2]
-      const assoc = (Math.max(-2, Math.min(2, liftBA - 1)) + Math.max(-2, Math.min(2, liftAB - 1))) / 2;
+      // ── 发生率提升（非饱和的方向性 lift）──
+      // 比较「另一组在 A 时间窗内的日均发生率」vs「窗外的日均发生率」。
+      // 即便 B 很频繁（率已接近基线），只要 A 窗内 B 率更高就能检出正向关联；
+      // 也不会因 B 泛滥而被稀释成"各过各的"。当窗覆盖几乎全部天数时（说明对方太频繁），
+      // 窗外基线失真 → 该方向 lift 不可信，回退为 1（无信息），避免误报。
+      const windowDaySet = (times: number[]) => {
+        const s = new Set<string>();
+        for (const t of times) {
+          const d0 = new Date(t - W), d1 = new Date(t + W);
+          let cur = new Date(d0.toISOString().slice(0, 10) + 'T00:00:00Z').getTime();
+          const end = d1.getTime();
+          while (cur <= end) { s.add(new Date(cur).toISOString().slice(0, 10)); cur += DAY; }
+        }
+        return s;
+      };
+      const span = spanDays(la, lb);
+      const winA = windowDaySet(ta);
+      const winB = windowDaySet(tb);
+      const totalB = [...cb.values()].reduce((a, b) => a + b, 0);
+      const totalA = [...ca.values()].reduce((a, b) => a + b, 0);
 
-      const strength = Math.max(Math.abs(corr), pGivenA, pGivenB, Math.min(1, Math.abs(assoc)));
-      if (strength < 0.25) continue;
+      const sumB_inWinA = [...winA].reduce((a, d) => a + (cb.get(d) || 0), 0);
+      const rateInWin_B = sumB_inWinA / (winA.size || 1);
+      const rateOut_B = (totalB - sumB_inWinA) / Math.max(1, span - winA.size);
+      const fracA = winA.size / span;
+      const liftAB = fracA > 0.05 && fracA < 0.8 && rateOut_B > 0 ? rateInWin_B / rateOut_B : 1; // A → B 提升
+
+      const sumA_inWinB = [...winB].reduce((a, d) => a + (ca.get(d) || 0), 0);
+      const rateInWin_A = sumA_inWinB / (winB.size || 1);
+      const rateOut_A = (totalA - sumA_inWinB) / Math.max(1, span - winB.size);
+      const fracB = winB.size / span;
+      const liftBA = fracB > 0.05 && fracB < 0.8 && rateOut_A > 0 ? rateInWin_A / rateOut_A : 1; // B → A 提升
+
+      const assoc = Math.max(-2, Math.min(2, (liftAB - 1 + liftBA - 1) / 2));
+      const sig = Math.max(Math.abs(liftAB - 1), Math.abs(liftBA - 1));
+
+      // 仅保留确有信号的对（发生率提升或日频相关），避免把"高频活动天然常伴"误报
+      if (sig < 0.12 && Math.abs(corr) < 0.2) continue;
+      if (matchedA < 1 && matchedB < 1) continue;
 
       out.push({
         aId: A.id, bId: B.id, aName: A.name, bName: B.name, aIcon: A.icon, bIcon: B.icon,
@@ -692,7 +756,10 @@ export function computeGroupDependencies(
       });
     }
   }
-  out.sort((x, y) => Math.max(Math.abs(x.corr), x.pGivenA, x.pGivenB) - Math.max(Math.abs(y.corr), y.pGivenA, y.pGivenB));
+  out.sort((x, y) =>
+    Math.max(Math.abs(x.liftBA - 1), Math.abs(x.liftAB - 1), Math.abs(x.corr)) -
+    Math.max(Math.abs(y.liftBA - 1), Math.abs(y.liftAB - 1), Math.abs(y.corr))
+  );
   return out;
 }
 
@@ -1022,6 +1089,157 @@ export function clusterDayArchetypes(daily: DailyFeature[], groups: EventGroupLi
   }
   const recent = assign[assign.length - 1];
   return { archetypes, nextClusterId: recent, nextClusterLabel: archetypes.find((a) => a.id === recent)?.label || null };
+}
+
+/* ── 4f) 三者两两关系：心情 / 睡眠 / 位置 ── */
+export interface DomainTriad {
+  moodSleep: number | null;                  // 心情 ↔ 睡眠 Pearson 相关
+  moodLoc: { tag: string; z: number } | null;    // 心情在何地偏离整体基线最大（z，正=偏高）
+  sleepLoc: { tag: string; z: number } | null;   // 睡眠在何地偏离整体基线最大
+}
+/**
+ * 跨域两两关系（仿事件关联，但作用在 心情/睡眠/位置 三者上）：
+ *  - 心情 ↔ 睡眠：在同时有记录的日子上算 Pearson 相关。
+ *  - 心情 ↔ 位置 / 睡眠 ↔ 位置：把「位置」当作分类变量，找相对整体基线偏离最大的地点（|z|≥0.4 才算有信号），
+ *    返回该地点与偏离方向（z 分数），供关系图展示"心情/睡眠 在 X 地偏高/偏低"。
+ * resolveTag 由调用方注入（避免本模块反向依赖 location-predict，防止循环引用）。
+ */
+export function computeDomainTriad(
+  daily: DailyFeature[],
+  resolveTag: (ts: number) => string | null
+): DomainTriad {
+  const rows = daily.map((d) => {
+    const ts = new Date(d.date + 'T00:00:00Z').getTime();
+    return { mood: d.moodAvg, sleep: d.sleepAvgMin, tag: resolveTag(ts) };
+  });
+  const ms = rows.filter((r) => r.mood != null && r.sleep != null);
+  const moodSleep = ms.length >= 3 ? pearson(ms.map((r) => r.mood!), ms.map((r) => r.sleep!)) : null;
+
+  const devByTag = (sel: (r: { mood: number | undefined; sleep: number | undefined; tag: string | null }) => number | undefined) => {
+    const vals = rows.map(sel).filter((v): v is number => v != null);
+    if (vals.length < 3) return null;
+    const m = mean(vals), sd = stddev(vals, m) || 1;
+    const byTag = new Map<string, number[]>();
+    for (const r of rows) {
+      const v = sel(r);
+      if (v == null || !r.tag) continue;
+      if (!byTag.has(r.tag)) byTag.set(r.tag, []);
+      byTag.get(r.tag)!.push(v);
+    }
+    let best: { tag: string; z: number } | null = null;
+    for (const [tag, arr] of byTag) {
+      if (arr.length < 3) continue;
+      const z = (mean(arr) - m) / sd;
+      if (!best || Math.abs(z) > Math.abs(best.z)) best = { tag, z };
+    }
+    return best && Math.abs(best.z) >= 0.4 ? best : null;
+  };
+
+  return {
+    moodSleep,
+    moodLoc: devByTag((r) => r.mood),
+    sleepLoc: devByTag((r) => r.sleep),
+  };
+}
+
+/* ── 4g) 标量时间序列预测（心情 / 睡眠时长 / 入睡时间 等单指标的前向外推）── */
+export interface ScalarPoint {
+  dayOffset: number;   // 距今天的天数：历史为负、未来为正、0=今天
+  dateISO: string;
+  value: number;
+  lo?: number; hi?: number;   // 未来点的预测区间（随 horizon 变宽）
+  isFuture: boolean;
+}
+export interface ScalarForecastResult {
+  points: ScalarPoint[];
+  level: number | null;
+  hasEnough: boolean;
+}
+/**
+ * 把不规整的每日观测（可能缺天）对齐成连续日网格（前向填充，gap>7 天断开不再补），
+ * 用【全部历史】估水平与季节起伏，向前外推 horizonWeeks 周。
+ * 展示时只取近 10 天历史，但预测本身基于所有数据：
+ *   · 长期基线 = 全量中位数（稳健，抗突发异常）
+ *   · 当前节律 = 近 14 天中位数（未来从这儿出发）
+ *   · 星期节律 = 全量数据区分「工作日 / 周末」两态
+ *   · 未来线从当前节律出发，按指数衰减缓慢回归长期基线，叠加周末偏移。
+ * 返回点序列供折线图绘制（历史段由页面裁到近 10 天）。 */
+export function forecastScalarSeries(
+  daily: { date: string; value: number | undefined }[],
+  opts: { horizonWeeks?: number; minHistory?: number; seasonal?: boolean; revertWeeks?: number } = {}
+): ScalarForecastResult {
+  const H = opts.horizonWeeks ?? 16;
+  const minHist = opts.minHistory ?? 21;
+  const seasonal = opts.seasonal !== false;
+  const revertWeeks = opts.revertWeeks ?? 6;
+  const todayMid = new Date(); todayMid.setUTCHours(0, 0, 0, 0);
+
+  const sorted = [...daily].filter((d) => d.value !== undefined).sort((a, b) => a.date.localeCompare(b.date));
+  if (!sorted.length) return { points: [], level: null, hasEnough: false };
+
+  // 连续化到每日网格
+  const grid: { date: Date; value: number }[] = [];
+  let lastVal: number | null = null;
+  let prevDate: Date | null = null;
+  for (const d of sorted) {
+    const cur = new Date(d.date + 'T00:00:00Z');
+    if (prevDate) {
+      const gap = Math.round((cur.getTime() - prevDate.getTime()) / DAY);
+      for (let k = 1; k < gap; k++) {
+        if (lastVal != null && k <= 7) grid.push({ date: new Date(prevDate.getTime() + k * DAY), value: lastVal });
+      }
+    }
+    grid.push({ date: cur, value: d.value! });
+    lastVal = d.value!; prevDate = cur;
+  }
+  const n = grid.length;
+  if (n < minHist) {
+    return {
+      points: grid.map((g) => ({
+        dayOffset: Math.round((g.date.getTime() - todayMid.getTime()) / DAY),
+        dateISO: g.date.toISOString(), value: g.value, isFuture: false,
+      })),
+      level: null, hasEnough: false,
+    };
+  }
+
+  // 长期基线：用【全部历史】的中位数做稳健基线（睡眠这类稳定节律对异常值敏感，用全量才不被近期极端值带偏）
+  const longTerm = median(grid.map((g) => g.value)) ?? grid[grid.length - 1].value;
+
+  // 当前节律：近 14 天中位数，未来从这儿出发（代表你现在的状态，而非全量平均）
+  const current = median(grid.slice(-14).map((g) => g.value)) ?? longTerm;
+
+  // 星期节律：用【全部历史】区分「工作日 vs 周末」两态；对无稳定周期变量（如心情）可关闭，避免假规律
+  let weekdayOff = 0, weekendOff = 0;
+  if (seasonal) {
+    let wdayOff = 0, wdayN = 0, wendOff = 0, wendN = 0;
+    for (const g of grid) {
+      const wd = g.date.getUTCDay();
+      const off = g.value - longTerm;
+      if (wd === 0 || wd === 6) { wendOff += off; wendN++; }
+      else { wdayOff += off; wdayN++; }
+    }
+    const damp = 0.5; // 再压幅，避免两态差异过大
+    weekdayOff = wdayN ? (wdayOff / wdayN) * damp : 0;
+    weekendOff = wendN ? (wendOff / wendN) * damp : 0;
+  }
+
+  // 生成分日未来点：从当前节律出发，缓慢回归长期水平，叠加工作日/周末两态偏移。
+  // 不做平滑 —— 睡眠的真实节律就是工作日/周末的锐利跳变，磨平反而会丢失信息。
+  const points: ScalarPoint[] = grid.map((g) => ({
+    dayOffset: Math.round((g.date.getTime() - todayMid.getTime()) / DAY),
+    dateISO: g.date.toISOString(), value: g.value, isFuture: false,
+  }));
+  for (let d = 1; d <= H * 7; d++) {
+    const date = new Date(todayMid.getTime() + d * DAY);
+    const wd = date.getUTCDay();
+    const weeksAhead = d / 7;
+    const reversion = 1 - Math.exp(-weeksAhead / revertWeeks); // revertWeeks 控制回归半衰期
+    const base = current + (longTerm - current) * reversion;
+    const off = (wd === 0 || wd === 6) ? weekendOff : weekdayOff;
+    points.push({ dayOffset: d, dateISO: date.toISOString(), value: base + off, isFuture: true });
+  }
+  return { points, level: current, hasEnough: true };
 }
 
 /* ── 5) 阶段起伏预测：基于已检测到的历史 regime，向前外推未来每个习惯的冷热起伏 ──

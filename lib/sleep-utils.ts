@@ -39,6 +39,24 @@ export function groupByDay(segments: SleepSegment[]) {
   return [...days.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([day, v]) => ({ day, ...v }));
 }
 
+/** Group segments by sleep day (Beijing 18:00–next 18:00), matching /sleep page aggregation */
+export function groupBySleepDay(segments: SleepSegment[]) {
+  const days = new Map<string, { segs: SleepSegment[]; asleepMin: number }>();
+  for (const s of segments) {
+    const { beijingHr, beijingDateStr } = utcToBeijing(s.start_date);
+    const dayDate = new Date(beijingDateStr + 'T00:00:00Z');
+    if (beijingHr >= 18) {
+      dayDate.setUTCDate(dayDate.getUTCDate() + 1);
+    }
+    const dayKey = dayDate.toISOString().slice(0, 10);
+    if (!days.has(dayKey)) days.set(dayKey, { segs: [], asleepMin: 0 });
+    const day = days.get(dayKey)!;
+    day.segs.push(s);
+    if (s.sleep_type !== 'in_bed') day.asleepMin += s.duration_minutes;
+  }
+  return [...days.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([day, v]) => ({ day, ...v }));
+}
+
 /** Parse sleep records into a full-day timeline (18:00–18:00 next day, Beijing) */
 export function buildTimeline(segments: SleepSegment[]) {
   if (segments.length === 0) return { axisStart: 18, axisEnd: 42, bars: [] as { type: string; x: number; w: number; min: number }[] };
