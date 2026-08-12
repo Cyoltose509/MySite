@@ -192,24 +192,18 @@ export function computeTiming(logs: EventLogLite[]): TimingStat {
   };
   if (count < 2) return empty;
 
-  // 取最近 8 次事件，间隔用指数衰减加权（近期权重更高 → 体现聚类/自激）
-  const recent = sorted.slice(-Math.min(8, count));
-  const deltas: number[] = [];
-  for (let i = 1; i < recent.length; i++) {
-    deltas.push((new Date(recent[i].event_at).getTime() - new Date(recent[i - 1].event_at).getTime()) / DAY);
+  // 平均间隔等 headline 统计量必须基于【全部历史】的相邻间隔，
+  // 否则会出现「count=150 但间隔只算最近 8 次」的口径不一致（如 150 次/173 天被算成 2.8 天）。
+  const allDeltas: number[] = [];
+  for (let i = 1; i < count; i++) {
+    allDeltas.push((new Date(sorted[i].event_at).getTime() - new Date(sorted[i - 1].event_at).getTime()) / DAY);
   }
-  const n = deltas.length;
-  const lambda = 0.5;
-  let wsum = 0, wmean = 0;
-  for (let i = 0; i < n; i++) {
-    const w = Math.exp(-lambda * (n - 1 - i));
-    wsum += w; wmean += w * deltas[i];
-  }
-  wmean = wsum ? wmean / wsum : mean(deltas);
-  const mPlain = mean(deltas);
-  const med = median(deltas);
-  const sd = stddev(deltas, wmean);
-  const cv = wmean > 0 ? sd / wmean : null;
+  const avgIntervalDays = mean(allDeltas);
+  const medianIntervalDays = median(allDeltas);
+  const sd = stddev(allDeltas, avgIntervalDays);
+  const cv = avgIntervalDays > 0 ? sd / avgIntervalDays : null;
+  // 近期间隔（仅用于卡片内迷你柱，体现最近节奏，取最近 12 次）
+  const recentIntervals = allDeltas.slice(-Math.min(12, allDeltas.length));
 
   let confidence: Confidence = 'unknown';
   if (cv !== null) {
@@ -219,7 +213,7 @@ export function computeTiming(logs: EventLogLite[]): TimingStat {
   }
 
   const lastMs = new Date(sorted[sorted.length - 1].event_at).getTime();
-  const baselineNextAt = new Date(lastMs + mPlain * DAY).toISOString();
+  const baselineNextAt = new Date(lastMs + avgIntervalDays * DAY).toISOString();
 
   // 星期季节性：统计所有事件落在各星期几的经验频率
   const hist = [0, 0, 0, 0, 0, 0, 0];
@@ -285,8 +279,8 @@ export function computeTiming(logs: EventLogLite[]): TimingStat {
   hourCnt.forEach((c, h) => { if (c > bestH) { bestH = c; prefHour = h; } });
   if (bestH <= 0) prefHour = null;
 
-  // 季节性修正点预测：从朴素均值起，先对齐高频星期几，再对齐高频日类型（限制 ±7 天）
-  let predMs = lastMs + wmean * DAY;
+  // 季节性修正点预测：从全量均值起，先对齐高频星期几，再对齐高频日类型（限制 ±7 天）
+  let predMs = lastMs + avgIntervalDays * DAY;
   if (seasonality >= 0.12 && modalWeekday !== null) {
     const d = new Date(predMs);
     for (let k = 0; k < 7; k++) {
@@ -309,24 +303,24 @@ export function computeTiming(logs: EventLogLite[]): TimingStat {
   const addDays = (ms: number, days: number | null) =>
     days === null ? null : new Date(ms + days * DAY).toISOString();
   const band = {
-    p25: addDays(lastMs, quantile(deltas, 0.25)),
-    p50: addDays(lastMs, quantile(deltas, 0.5)),
-    p75: addDays(lastMs, quantile(deltas, 0.75)),
+    p25: addDays(lastMs, quantile(allDeltas, 0.25)),
+    p50: addDays(lastMs, quantile(allDeltas, 0.5)),
+    p75: addDays(lastMs, quantile(allDeltas, 0.75)),
   };
 
   // 生存分析 / 危险率：给定「已隔 currentGap 天没发生」，估计今天发生的概率
   const currentGapDays = Math.max(0, (Date.now() - lastMs) / DAY);
-  const survCount = deltas.filter((g) => g > currentGapDays).length;
-  const survivalNow = n ? survCount / n : 0;
-  const atRisk = deltas.filter((g) => g >= currentGapDays).length;
-  const inBin = deltas.filter((g) => g >= currentGapDays && g < currentGapDays + 1).length;
+  const survCount = allDeltas.filter((g) => g > currentGapDays).length;
+  const survivalNow = allDeltas.length ? survCount / allDeltas.length : 0;
+  const atRisk = allDeltas.filter((g) => g >= currentGapDays).length;
+  const inBin = allDeltas.filter((g) => g >= currentGapDays && g < currentGapDays + 1).length;
   const hazardNow = atRisk ? inBin / atRisk : 0;
-  const p75gap = quantile(deltas, 0.75) ?? wmean;
+  const p75gap = quantile(allDeltas, 0.75) ?? avgIntervalDays;
   const offRoutine = currentGapDays > p75gap;
 
   return {
-    count, lastAt, avgIntervalDays: wmean, medianIntervalDays: med, cv,
-    predictedNextAt, baselineNextAt, confidence, recentIntervals: deltas,
+    count, lastAt, avgIntervalDays, medianIntervalDays, cv,
+    predictedNextAt, baselineNextAt, confidence, recentIntervals,
     weekdayDist, modalWeekday, dayTypeRate, dayTypePrefIndex, modalDayType,
     timeOfDayPref, prefHour, todDist, seasonality, band,
     currentGapDays, hazardNow, survivalNow, offRoutine,
@@ -1000,8 +994,9 @@ export function detectRegimes(
       const seg = segs[best.segIdx];
       segs.splice(best.segIdx, 1, { start: seg.start, end: best.i - 1 }, { start: best.i, end: seg.end });
     }
-    if (segs.length < 2) continue;                // 没有显著阶段变化
-    const regimes: Regime[] = segs.map((seg) => {
+    // 没有显著阶段变化（segs 只有 1 段）也保留：整段作为 1 个 normal regime，
+    // 这样平稳的组（含解锁后的私密组）仍会进入未来预测，只是画出平稳基线。
+      const regimes: Regime[] = segs.map((seg) => {
       const { rate, count } = rateOf(seg.start, seg.end);
       let kind: Regime['kind'] = 'normal';
       if (baselinePerDay > 0) {
