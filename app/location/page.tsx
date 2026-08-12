@@ -76,6 +76,17 @@ function heatColor(t: number): string {
   return 'rgb(239,68,68)';
 }
 
+// 省名短写（"广东"）→ GeoJSON 全名（"广东省"）。精确匹配优先，否则前缀匹配。
+function matchProvinceName(geo: any, short: string): string | null {
+  const s = (short || '').trim();
+  if (!s || !geo) return null;
+  let f = geo.features.find((x: any) => x.properties?.name === s);
+  if (f) return f.properties.name;
+  f = geo.features.find((x: any) => x.properties?.name.startsWith(s));
+  if (f) return f.properties.name;
+  return null;
+}
+
 export default function LocationPage() {
   const { unlocked, refreshKey } = usePrivateAccess();
   const [stays, setStays] = useState<Stay[]>([]);
@@ -84,6 +95,9 @@ export default function LocationPage() {
   const [loading, setLoading] = useState(false);
   const [hover, setHover] = useState<CityAgg | null>(null);
   const [selected, setSelected] = useState<CityAgg | null>(null);
+  // 省份（区域填色）的 hover / 选中
+  const [pHover, setPHover] = useState<{ place: string; hours: number; count: number; topTag: string } | null>(null);
+  const [pSelected, setPSelected] = useState<{ place: string; hours: number; count: number; topTag: string } | null>(null);
   const [tagFilter, setTagFilter] = useState<string>('全部');
   // 公开标签分布（匿名即可拉取，不含具体城市）
   const [tagSummary, setTagSummary] = useState<{ tag: string; stay_count: number; total_hours: number }[]>([]);
@@ -155,7 +169,8 @@ export default function LocationPage() {
       const h = Math.max(0, (end - start) / 3600000);
       const place = effectivePlace(s);
       const tag = s.tag || '其他';
-      const cur = map.get(place) || { place, hours: 0, count: 0, coord: effectiveCoord(s), tagHours: {}, topTag: '其他' };
+      const coord = effectiveCoord(s);
+      const cur = map.get(place) || { place, hours: 0, count: 0, coord, tagHours: {}, topTag: '其他' };
       cur.hours += h;
       cur.count += 1;
       cur.tagHours[tag] = (cur.tagHours[tag] || 0) + h;
@@ -205,41 +220,74 @@ export default function LocationPage() {
     };
   }, [geo, agg]);
 
-  const provincePaths = useMemo(() => {
-    if (!geo || !project) return [] as string[];
+  // 省份多边形（含名称），用于区域填色
+  const provinceFeatures = useMemo(() => {
+    if (!geo || !project) return [] as { d: string; name: string }[];
     const ringPath = (ring: number[][]) =>
       ring.map(([x, y], i) => {
         const [px, py] = project(x, y);
         return (i ? 'L' : 'M') + px.toFixed(1) + ' ' + py.toFixed(1);
       }).join(' ') + ' Z';
-    const out: string[] = [];
+    const out: { d: string; name: string }[] = [];
     for (const f of geo.features) {
       const g = f.geometry;
       if (!g) continue;
-      if (g.type === 'Polygon') out.push(g.coordinates.map(ringPath).join(' '));
-      else if (g.type === 'MultiPolygon') out.push(g.coordinates.flatMap((poly: number[][][]) => poly.map(ringPath)).join(' '));
+      let d = '';
+      if (g.type === 'Polygon') d = g.coordinates.map(ringPath).join(' ');
+      else if (g.type === 'MultiPolygon') d = g.coordinates.flatMap((poly: number[][][]) => poly.map(ringPath)).join(' ');
+      out.push({ d, name: f.properties?.name ?? '' });
     }
     return out;
   }, [geo, project]);
 
-
   const maxHours = agg.length ? agg[0].hours : 1;
 
-  // 有坐标的城市气泡
-  const bubbles = useMemo(() => {
-    if (!project) return [] as { agg: CityAgg; x: number; y: number; color: string; r: number }[];
-    return agg
-      .map(a => {
-        if (!a.coord) return null;
-        const [x, y] = project(a.coord[0], a.coord[1]);
-        const ratio = a.hours / maxHours;
-        const t = Math.sqrt(ratio);
-        return { agg: a, x, y, color: heatColor(t), r: 7 + 24 * t };
-      })
-      .filter(Boolean) as { agg: CityAgg; x: number; y: number; color: string; r: number }[];
-  }, [agg, project, maxHours]);
+  // 按省份聚合停留时长（区域填色的底色）
+  const provinceAgg = useMemo(() => {
+    const map = new Map<string, { hours: number; count: number; tagHours: Record<string, number> }>();
+    const refNow = now || 0;
+    for (const s of filteredStays) {
+      const short = (s.province && s.province.trim()) || '';
+      if (!short) continue; // 国外 / 缺失：无对应省多边形，跳过
+      const geoName = matchProvinceName(geo, short);
+      if (!geoName) continue;
+      const start = new Date(s.started_at).getTime();
+      const end = s.ended_at ? new Date(s.ended_at).getTime() : (refNow || start);
+      const h = Math.max(0, (end - start) / 3600000);
+      const tag = s.tag || '其他';
+      const cur = map.get(geoName) || { hours: 0, count: 0, tagHours: {} as Record<string, number> };
+      cur.hours += h; cur.count += 1;
+      cur.tagHours[tag] = (cur.tagHours[tag] || 0) + h;
+      map.set(geoName, cur);
+    }
+    const arr = Array.from(map.entries()).map(([name, o]) => {
+      let topTag = '其他', best = -1;
+      for (const [t, v] of Object.entries(o.tagHours)) if (v > best) { best = v; topTag = t; }
+      return { name, hours: o.hours, count: o.count, topTag };
+    });
+    return arr;
+  }, [filteredStays, geo, now]);
 
-  const active = hover || selected;
+  const provMap = useMemo(() => {
+    const m = new Map<string, { name: string; hours: number; count: number; topTag: string }>();
+    for (const p of provinceAgg) m.set(p.name, p);
+    return m;
+  }, [provinceAgg]);
+
+  const maxProvHours = provinceAgg.length ? Math.max(...provinceAgg.map(p => p.hours)) : 1;
+
+  // 城市定位点（小，仅作位置标记，不拦截交互、不覆盖边界）
+  const cityDots = useMemo(() => {
+    if (!project) return [] as { place: string; x: number; y: number }[];
+    return agg
+      .filter(a => a.coord)
+      .map(a => {
+        const [x, y] = project(a.coord![0], a.coord![1]);
+        return { place: a.place, x, y };
+      });
+  }, [agg, project]);
+
+  const active = pHover || pSelected || hover || selected;
   const sortedTagStays = useMemo(() => {
     return [...tagStays].sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime());
   }, [tagStays]);
@@ -382,21 +430,32 @@ export default function LocationPage() {
               {!geo && !geoErr && <div style={{ padding: 40, textAlign: 'center', color: '#71717a', fontSize: 13 }}>加载地图中…</div>}
               {geo && project && (
                 <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
-                  {/* 省份 */}
-                  {provincePaths.map((d, i) => (
-                    <path key={i} d={d} fill="#15152b" stroke="#2a2a44" strokeWidth={0.6} />
+                  {/* 省份填色（区域填色；边界线在最后一层覆盖，永远可见） */}
+                  {provinceFeatures.map((f) => {
+                    const pa = provMap.get(f.name);
+                    const isActive = (pHover?.place === f.name) || (pSelected?.place === f.name);
+                    const fill = pa ? heatColor(Math.sqrt(pa.hours / maxProvHours)) : '#15152b';
+                    return (
+                      <path key={'f-' + f.name} d={f.d}
+                        fill={fill}
+                        fillOpacity={pa ? 0.85 : 1}
+                        stroke={isActive ? '#ffffff' : (pa ? '#3a3a5a' : '#20203a')}
+                        strokeWidth={isActive ? 1.6 : 0.6}
+                        onMouseEnter={() => pa && setPHover({ place: f.name, hours: pa.hours, count: pa.count, topTag: pa.topTag })}
+                        onMouseLeave={() => setPHover(null)}
+                        onClick={() => pa && setPSelected({ place: f.name, hours: pa.hours, count: pa.count, topTag: pa.topTag })}
+                        style={{ cursor: pa ? 'pointer' : 'default' }}
+                      />
+                    );
+                  })}
+                  {/* 城市定位点（小，纯标记） */}
+                  {cityDots.map(d => (
+                    <circle key={'d-' + d.place} cx={d.x} cy={d.y} r={3.2}
+                      fill="#e9e9ef" fillOpacity={0.9} stroke="#0d0d1a" strokeWidth={0.6} pointerEvents="none" />
                   ))}
-                  {/* 城市气泡 */}
-                  {bubbles.map(b => (
-                    <g key={b.agg.place}
-                      onMouseEnter={() => setHover(b.agg)}
-                      onMouseLeave={() => setHover(null)}
-                      onClick={() => setSelected(b.agg)}
-                      style={{ cursor: 'pointer' }}>
-                      <circle cx={b.x} cy={b.y} r={b.r}
-                        fill={b.color} fillOpacity={0.78}
-                        stroke={selected === b.agg ? '#fff' : '#0d0d1a'} strokeWidth={selected === b.agg ? 2 : 1} />
-                    </g>
+                  {/* 边界线（顶层，确保不被填色 / 定位点覆盖） */}
+                  {provinceFeatures.map(f => (
+                    <path key={'s-' + f.name} d={f.d} fill="none" stroke="#2a2a44" strokeWidth={0.7} pointerEvents="none" />
                   ))}
                 </svg>
               )}

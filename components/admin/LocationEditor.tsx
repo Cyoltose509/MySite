@@ -251,7 +251,7 @@ export function LocationEditor() {
           <input value={note} onChange={e => setNote(e.target.value)} placeholder="选填" style={{ ...iS, width: '100%' }} />
         </label>
 
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button onClick={save} disabled={loading} style={{ ...styles.saveBtn, opacity: loading ? 0.6 : 1 }}>
             {editingId ? '💾 更新' : '➕ 添加'}
           </button>

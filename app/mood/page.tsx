@@ -3,7 +3,8 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
-import { isAuthenticated } from '@/lib/auth';
+import { isAuthenticated, getPrivateSession } from '@/lib/auth';
+import { usePrivateAccess } from '@/lib/private';
 import { MOOD_SCORE_LABELS, MOOD_EMOJIS, TIME_SCALES, type TimeScale } from '@/lib/types';
 import { C } from '@/lib/card-styles';
 
@@ -57,27 +58,39 @@ export default function MoodPage() {
   const [scale, setScale] = useState<TimeScale>('daily');
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const chartRef = useRef<HTMLDivElement>(null);
+  // 隐私解锁状态：unlockPrivate() 后 unlocked=true，解锁/锁定都会触发 refreshKey 变化重拉数据。
+  const { unlocked, refreshKey } = usePrivateAccess();
 
   useEffect(() => {
     fetchLogs();
-  }, []);
+  }, [unlocked, refreshKey]);
+
+  const toMoodLog = (m: Record<string, unknown>): MoodLog => ({
+    id: m.id as string,
+    mood: (m.mood as string) || '',
+    note: (m.note as string) || undefined,
+    mood_score: (m.mood_score as number) || undefined,
+    visibility: (m.visibility as 'public' | 'private') || 'public',
+    created_at: m.created_at as string,
+  });
 
   const fetchLogs = async () => {
-    // 公开 RPC：任何人（含未登录访客）都能读到每条心情的分数；
-    // 私密条目的 note 在数据库层已被置空，前端永远拿不到私密文本，也无需任何区分 UI。
-    const { data } = await supabase.rpc('fn_get_mood_logs_public');
-    let all: MoodLog[] = [];
-    if (data && Array.isArray(data)) {
-      all = (data as Array<Record<string, unknown>>).map((m) => ({
-        id: m.id as string,
-        mood: (m.mood as string) || '',
-        note: (m.note as string) || undefined,
-        mood_score: (m.mood_score as number) || undefined,
-        visibility: (m.visibility as 'public' | 'private') || 'public',
-        created_at: m.created_at as string,
-      }));
-      all.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    let rows: Array<Record<string, unknown>> = [];
+    // 已解锁 → 用 admin RPC 拉全量（含私密 note）；失败/未解锁 → 回退公开 RPC（私密 note 在 DB 层置空）。
+    if (unlocked) {
+      const hash = getPrivateSession();
+      if (hash) {
+        const { data, error } = await supabase.rpc('fn_get_mood_logs_admin', { p_hash: hash });
+        if (!error && Array.isArray(data)) rows = data as Array<Record<string, unknown>>;
+      }
     }
+    if (!rows.length) {
+      const { data } = await supabase.rpc('fn_get_mood_logs_public');
+      if (Array.isArray(data)) rows = data as Array<Record<string, unknown>>;
+    }
+    const all = rows
+      .map(toMoodLog)
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     setLogs(all);
     setLoading(false);
   };
