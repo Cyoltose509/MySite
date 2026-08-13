@@ -195,6 +195,12 @@ export default function AnimePage() {
         }}>
           📊 分析
         </button>
+        <Link href="/anime/rank" style={{
+          padding: '4px 14px', borderRadius: 20, border: '1px solid #27273d',
+          background: '#16162a', color: '#f59e0b', fontSize: 13, textDecoration: 'none',
+        }}>
+          🏆 从夯到拉
+        </Link>
       </header>
 
       {/* Stats bar */}

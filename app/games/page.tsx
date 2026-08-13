@@ -207,6 +207,10 @@ export default function GamesPage() {
                     padding: '4px 14px', borderRadius: 20, border: '1px solid #27273d',
                     background: '#16162a', color: '#f59e0b', fontSize: 13, cursor: 'pointer',
                 }}>📊 分析</button>
+                <Link href="/games/rank" style={{
+                    padding: '4px 14px', borderRadius: 20, border: '1px solid #27273d',
+                    background: '#16162a', color: '#f59e0b', fontSize: 13, textDecoration: 'none',
+                }}>🏆 从夯到拉</Link>
             </header>
 
             <p style={{fontSize: 11, color: '#52525b', marginBottom: 12}}>数据来源：Steam + 自定义</p>

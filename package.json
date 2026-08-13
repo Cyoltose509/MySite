@@ -14,6 +14,7 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
     "crypto-js": "^4.2.0",
+    "html-to-image": "^1.11.13",
     "js-sha256": "^0.11.0",
     "kuroshiro": "^1.2.0",
     "kuroshiro-analyzer-kuromoji": "^1.1.0",

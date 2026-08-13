@@ -110,6 +110,10 @@ export default function MealsPage() {
           padding: '6px 14px', borderRadius: 10, border: '1px solid #27273d',
           background: 'transparent', color: '#818cf8', fontSize: 12, cursor: 'pointer',
         }}>📊 分析</button>
+        <Link href="/meals/rank" style={{
+          padding: '6px 14px', borderRadius: 10, border: '1px solid #27273d',
+          background: 'transparent', color: '#f59e0b', fontSize: 12, textDecoration: 'none',
+        }}>🏆 从夯到拉</Link>
       </header>
 
       <section style={controlsStyle}>

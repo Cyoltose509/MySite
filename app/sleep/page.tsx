@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { isAuthenticated } from '@/lib/auth';
 import { TYPE_LABELS, TYPE_COLORS, utcToBeijing } from '@/lib/sleep-utils';
+import { detectAnomalies } from '@/lib/insights';
 
 interface SleepLog {
   id: string;
@@ -76,14 +77,26 @@ export default function SleepPage() {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([day, segs]) => {
         const sorted = segs.sort((a, b) => a.start_date.localeCompare(b.start_date));
-        const inBedDurs = sorted
-          .filter(x => x.sleep_type === 'in_bed')
-          .map(x => x.duration_minutes || 0);
-        const inBedMin = inBedDurs.length ? Math.max(...inBedDurs) : 0;
-        const asleepMin = sorted
-          .filter(x => !['in_bed', 'asleep_awake'].includes(x.sleep_type))
-          .reduce((s, x) => s + (x.duration_minutes || 0), 0);
-        return { day, segs: sorted, totalMin: inBedMin, asleepMin };
+        const inBedSegs = sorted.filter(x => x.sleep_type === 'in_bed');
+        const inBedMin = inBedSegs.length ? Math.max(...inBedSegs.map(x => x.duration_minutes || 0)) : 0;
+        const asleepSegs = sorted.filter(x => !['in_bed', 'asleep_awake'].includes(x.sleep_type));
+        const asleepMin = asleepSegs.reduce((s, x) => s + (x.duration_minutes || 0), 0);
+        // 睡眠必然发生在床上：若当天有睡眠记录却没有任何「在床」记录，
+        // 则默认补一份在床时间 = 睡眠时长，使在床统计/图表/入睡时间都不缺失。
+        const bedMin = inBedMin > 0 ? inBedMin : asleepMin;
+        // 图表与提示：仅当确实缺在床记录时，补一条覆盖睡眠区间的合成在床段（画在睡眠之下）。
+        let displaySegs = sorted;
+        if (inBedMin === 0 && asleepSegs.length) {
+          const bedSeg: SleepLog = {
+            id: `synthetic-bed-${day}`,
+            start_date: asleepSegs.reduce((a, b) => (a.start_date < b.start_date ? a : b)).start_date,
+            end_date: asleepSegs.reduce((a, b) => (a.end_date > b.end_date ? a : b)).end_date,
+            sleep_type: 'in_bed',
+            duration_minutes: asleepMin,
+          };
+          displaySegs = [bedSeg, ...sorted];
+        }
+        return { day, segs: displaySegs, bedMin, asleepMin };
       });
   }, [logs]);
 
@@ -91,18 +104,33 @@ export default function SleepPage() {
   const stats = useMemo(() => {
     if (!dailySegmentsAll.length) return null;
     const withAsleep = dailySegmentsAll.filter(d => d.asleepMin > 0);
-    const withBed = dailySegmentsAll.filter(d => d.totalMin > 0);
+    const withBed = dailySegmentsAll.filter(d => d.bedMin > 0);
     if (!withAsleep.length) return null;
     const maxDay = withAsleep.reduce((a, b) => a.asleepMin > b.asleepMin ? a : b);
     const minDay = withAsleep.reduce((a, b) => a.asleepMin < b.asleepMin ? a : b);
     return {
-      avgTotal: withBed.length ? Math.round(withBed.reduce((s, x) => s + x.totalMin, 0) / withBed.length) : 0,
+      avgTotal: withBed.length ? Math.round(withBed.reduce((s, x) => s + x.bedMin, 0) / withBed.length) : 0,
       avgAsleep: Math.round(withAsleep.reduce((s, x) => s + x.asleepMin, 0) / withAsleep.length),
       maxAsleep: maxDay.asleepMin,
       minAsleep: minDay.asleepMin,
       maxDay: maxDay.day,
       minDay: minDay.day,
     };
+  }, [dailySegmentsAll]);
+
+  // ===== useMemo: 睡眠异常提醒（近期实测 vs 历史基线），仅睡眠维度，用于顶部 banner =====
+  const sleepAlert = useMemo(() => {
+    if (!dailySegmentsAll.length) return null;
+    const onset = dailySegmentsAll.map((d) => {
+      const inBed = d.segs.filter((s) => s.sleep_type === 'in_bed');
+      if (!inBed.length) return { date: d.day, value: undefined as number | undefined };
+      const mainBed = inBed.reduce((a, b) => ((a.duration_minutes || 0) >= (b.duration_minutes || 0) ? a : b));
+      const { beijingHr } = utcToBeijing(mainBed.start_date);
+      return { date: d.day, value: beijingHr >= 18 ? beijingHr : beijingHr + 24 };
+    });
+    const dur = dailySegmentsAll.map((d) => ({ date: d.day, value: d.asleepMin ? d.asleepMin / 60 : undefined }));
+    const rep = detectAnomalies({ moodDaily: [], sleepOnset: onset, sleepDur: dur });
+    return rep.alert ? rep : null;
   }, [dailySegmentsAll]);
 
   // ===== useMemo: 时间轴范围（根据实际数据动态计算）=====
@@ -149,17 +177,13 @@ export default function SleepPage() {
   }, [dailySegmentsAll.length]);
 
   // ===== 普通函数 =====
-  const fmtT = (iso: string) => {
-    const { beijingHr } = utcToBeijing(iso);
-    const displayHr = Math.floor(beijingHr);
-    const displayMin = Math.round((beijingHr - displayHr) * 60);
-    return `${String(displayHr).padStart(2, '0')}:${String(displayMin).padStart(2, '0')}`;
-  };
   const fmtH = (m: number) => {
     if (!m || m <= 0) return '0h';
     const h = Math.floor(m / 60), rem = m % 60;
     return `${h}h${rem ? ` ${rem}m` : ''}`;
   };
+  // 小时为单位（小数），专用于 tooltip
+  const fmtHours = (m: number) => (m > 0 ? `${(m / 60).toFixed(1)}h` : '0h');
 
   // ===== 常量 =====
   const svgH = 600;
@@ -190,18 +214,9 @@ export default function SleepPage() {
     if (ci < 0 || ci >= dailySegmentsAll.length) { setTooltip(null); setHoverCol(null); return; }
     setHoverCol(ci);
     const sd = dailySegmentsAll[ci];
-    for (const seg of sd.segs) {
-      const y1 = timeToY(seg.start_date, svgH), y2 = timeToY(seg.end_date, svgH);
-      const cy = Math.max(y1, TOP_PAD), ch = Math.min(y2, svgH - BOT_PAD) - cy;
-      if (ch <= 0) continue;
-      const sx = ci * COL_W + 4, sw = COL_W - 12;
-      if (mx >= sx && mx <= sx + sw && my >= cy && my <= cy + ch) {
-        setTooltip({ x: e.clientX, y: e.clientY, day: sd.day, type: seg.sleep_type, start: seg.start_date, end: seg.end_date, dur: seg.duration_minutes });
-        return;
-      }
-    }
-    setTooltip({ x: e.clientX, y: e.clientY, day: sd.day, type: '_summary', start: '', end: '', dur: sd.totalMin });
-  }, [dailySegmentsAll, timeToY, svgH]);
+    // tooltip 始终显示当天总和（睡眠 / 在床），不显示光标下的单一段
+    setTooltip({ x: e.clientX, y: e.clientY, day: sd.day, type: '_summary', start: '', end: '', dur: sd.bedMin });
+  }, [dailySegmentsAll]);
 
   const onLeave = () => { setTooltip(null); setHoverCol(null); };
 
@@ -216,6 +231,17 @@ export default function SleepPage() {
         <span style={S.badge}>{logs.length} 条 · {dailySegmentsAll.length} 天</span>
         {isAuthenticated() && <Link href="/admin" style={S.adminLink}>管理 →</Link>}
       </header>
+
+      {sleepAlert && (
+        <div style={S.alertBox}>
+          <div style={S.alertTitle}>⚠️ 睡眠异常提醒</div>
+          <div style={S.alertList}>
+            {sleepAlert.messages.map((m, i) => (
+              <div key={i}>· {m}</div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {stats && (
         <div style={S.statsGrid}>
@@ -367,30 +393,16 @@ export default function SleepPage() {
 
       {!dailySegmentsAll.length && <p style={S.empty}>暂无数据，请先通过 iOS 快捷指令同步</p>}
 
-      {/* Tooltip */}
-      {tooltip && tooltip.type !== '_summary' && (
-        <div style={{
-          ...S.tooltip,
-          left: tooltip.x + 18,
-          top: tooltip.y - 6,
-        }}>
-          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 2, color: TYPE_COLORS[tooltip.type] }}>
-            {TYPE_LABELS[tooltip.type]}
-          </div>
-          <div style={{ color: '#888', fontSize: 11 }}>{tooltip.day}</div>
-          <div>{fmtT(tooltip.start)} — {fmtT(tooltip.end)}</div>
-          <div style={{ fontWeight: 600, color: '#a5b4fc' }}>时长 {tooltip.dur} 分钟</div>
-        </div>
-      )}
-      {tooltip && tooltip.type === '_summary' && (
+      {/* Tooltip：始终显示当天总和（睡眠 / 在床，小时单位） */}
+      {tooltip && (
         <div style={{
           ...S.tooltip,
           left: tooltip.x + 18,
           top: tooltip.y - 6,
         }}>
           <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 2 }}>{tooltip.day}</div>
-          <div>睡眠 <span style={{ color: '#818cf8', fontWeight: 600 }}>{fmtH(dailySegmentsAll.find(d => d.day === tooltip.day)?.asleepMin || 0)}</span></div>
-          <div>在床 <span style={{ fontWeight: 600 }}>{fmtH(tooltip.dur)}</span></div>
+          <div>睡眠 <span style={{ color: '#818cf8', fontWeight: 600 }}>{fmtHours(dailySegmentsAll.find(d => d.day === tooltip.day)?.asleepMin || 0)}</span></div>
+          <div>在床 <span style={{ fontWeight: 600 }}>{fmtHours(tooltip.dur)}</span></div>
         </div>
       )}
     </div>
@@ -405,6 +417,9 @@ const S = {
   back: { fontSize: 13, color: '#71717a', textDecoration: 'none' } as React.CSSProperties,
   h1: { fontSize: 24, fontWeight: 800, color: '#fff', margin: 0, flex: 1 } as React.CSSProperties,
   badge: { padding: '4px 14px', borderRadius: 20, background: '#16162a', border: '1px solid #27273d', fontSize: 13, color: '#818cf8' } as React.CSSProperties,
+  alertBox: { marginBottom: 24, padding: '16px 20px', borderRadius: 14, background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.5)' } as React.CSSProperties,
+  alertTitle: { fontSize: 13, fontWeight: 700, color: '#f87171', marginBottom: 10 } as React.CSSProperties,
+  alertList: { display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: '#fca5a5', lineHeight: 1.5 } as React.CSSProperties,
   adminLink: { padding: '6px 14px', borderRadius: 10, border: '1px solid #27273d', color: '#818cf8', fontSize: 12, textDecoration: 'none' } as React.CSSProperties,
   statsGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))', gap: 12, marginBottom: 24 } as React.CSSProperties,
   statCard: { padding: '14px 16px', borderRadius: 14, background: '#121224', border: '1px solid #1e1e32', textAlign: 'center' } as React.CSSProperties,

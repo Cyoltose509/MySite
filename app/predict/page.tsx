@@ -22,6 +22,7 @@ import {
 import { currentTag, tagAt, locationTagActivityProfile, predictLocationTransition, forecastLocationState, logsForTag, type LocStay, type LocTagStay, type LocationTransitionResult, type LocationStateForecast } from '@/lib/location-predict';
 import { groupBySleepDay, utcToBeijing } from '@/lib/sleep-utils';
 import { tagMeta } from '@/lib/location-place';
+import { computeAttribution, fmtOnset, fmtAbs, fmtSign, type Attribution } from '@/lib/insights';
 
 interface MusicLite { id: string; title: string; artist: string[]; created_at?: string; }
 interface MusicTagLite { music_id: string; singability?: number; likability?: number; }
@@ -404,6 +405,18 @@ export default function PredictPage() {
     return { onset, dur };
   }, [sleepData]);
 
+  // 跨域归因：把联动关系提炼成「能直接读」的结论列表（按效应量排序）
+  const attribution = useMemo<Attribution[]>(() => {
+    if (!moodDaily.length && !sleepNightly.dur.length) return [];
+    return computeAttribution({
+      crossDomain,
+      moodDaily,
+      sleepOnset: sleepNightly.onset,
+      sleepDur: sleepNightly.dur,
+      resolveTag: (ts) => tagAt(ts, tagStays)?.tag ?? null,
+    });
+  }, [crossDomain, moodDaily, sleepNightly, tagStays]);
+
   // 心情不做自身历史外推（无稳定周期、硬外推只会造假规律），
   // 改由「睡眠时长」+「所在地」这两个【可预测变量】驱动：
   //   心情(d) ≈ 基线 + 斜率·(预测睡眠时长(d) − 平均睡眠) + Σ 地点概率·该地点心情偏离
@@ -783,6 +796,37 @@ export default function PredictPage() {
           </div>
         ) : (
           <p style={emptyStyle}>还没有心情 / 睡眠 / 位置记录，无法做跨域联动</p>
+        )}
+      </Section>
+
+      {/* ── 跨域归因：什么在影响你 ── */}
+      <Section title="🔍 是什么在影响你">
+        {attribution.length > 0 ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {attribution.map((a) => {
+              const color = a.dir === 'up' ? '#4ade80' : a.dir === 'down' ? '#f87171' : '#9ca3af';
+              const confLabel = { high: '规律', medium: '较规律', low: '随性', unknown: '样本少' }[a.confidence];
+              const deltaText =
+                a.unit === 'r'
+                  ? `r=${a.delta > 0 ? '+' : ''}${a.delta.toFixed(2)}`
+                  : a.metric === '睡眠' || a.factor.startsWith('在')
+                  ? `${fmtSign(a.delta)}${fmtAbs(a.delta, 1)}${a.unit}`
+                  : `${fmtSign(a.delta)}${fmtAbs(a.delta)}${a.unit}`;
+              return (
+                <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px', borderRadius: 10, background: C.surface, border: '1px solid ' + C.border }}>
+                  <span style={{ flex: 1, fontSize: 13, color: C.text }}>{a.factor}</span>
+                  <span style={{ fontSize: 11, color: C.textSec, width: 64, textAlign: 'right' }}>{a.metric}</span>
+                  <span style={{ fontSize: 12, fontWeight: 700, color, width: 84, textAlign: 'right' }}>{deltaText}</span>
+                  <span style={{ fontSize: 10, color: C.textDim, width: 44, textAlign: 'right' }}>{confLabel}·{a.n}</span>
+                </div>
+              );
+            })}
+            <p style={{ fontSize: 11, color: C.textDim, marginTop: 4 }}>
+              按「效应量 × 置信度」排序；绿=正相关 / 红=负相关。睡眠以「前一天 → 次日心情」的滞后效应计算（避免把结果当原因）。
+            </p>
+          </div>
+        ) : (
+          <p style={emptyStyle}>还需要更多心情 / 睡眠 / 事件记录，才能归纳出影响规律</p>
         )}
       </Section>
 
