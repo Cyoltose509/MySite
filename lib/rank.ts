@@ -19,7 +19,7 @@ export interface RankTag {
 }
 
 export interface RankItem {
-  id: string;        // 唯一拖拽 key（等于 entityId，用 id 方便 React）
+  id: string;        // 实体唯一 id（等于 entityId）
   title: string;
   subtitle?: string;
   tier: Tier;
@@ -69,6 +69,25 @@ function mean(nums: number[]) {
   return nums.reduce((a, b) => a + b, 0) / nums.length;
 }
 
+/** Supabase REST 查询默认 limit 1000，标签表（music_tags/steam_tags/meal_tags 等）
+ * 常超 1000 行。不分页会导致后半段标签丢失、推断全部落到「拉完了」。
+ * 用 range 循环拉全量。 */
+export async function fetchAll(table: string, columns: string): Promise<any[]> {
+  const out: any[] = [];
+  const step = 1000;
+  for (let start = 0; ; start += step) {
+    const { data, error } = await supabase
+      .from(table)
+      .select(columns)
+      .range(start, start + step - 1);
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    out.push(...data);
+    if (data.length < step) break;
+  }
+  return out;
+}
+
 function inferTier(domain: Domain, source: any, tags: RankTag[] = []): Tier {
   if (domain === 'anime' || domain === 'meal') {
     return RATING_TO_TIER[source.rating] || '拉完了';
@@ -85,30 +104,21 @@ function inferTier(domain: Domain, source: any, tags: RankTag[] = []): Tier {
   return '拉完了';
 }
 
+/** 纯展示：档位完全由各源表的评级字段（anime_list.rating / steam_tags.rating /
+ *  music_tags.likability·singability / meal_tags·meals.rating）推断得出，
+ * 不再读取或写入 rankings 表。 */
 export async function loadRankItems(domain: Domain): Promise<RankItem[]> {
-  const [{ data: ranks }, items] = await Promise.all([
-    supabase.from('rankings').select('entity_id,tier').eq('domain', domain),
-    loadSourceItems(domain),
-  ]);
-
-  const rankMap: Record<string, Tier> = {};
-  for (const r of ranks || []) {
-    if (TIERS.includes(r.tier as Tier)) rankMap[r.entity_id] = r.tier as Tier;
-  }
-
-  return items.map((it: SourceItem) => {
-    const tier = rankMap[it.id] || inferTier(domain, it.source, it.tags || []);
-    return {
-      id: it.id,
-      title: it.title,
-      subtitle: it.subtitle,
-      tier,
-      entityId: it.id,
-      coverUrl: it.coverUrl,
-      source: it.source,
-      tags: it.tags,
-    };
-  });
+  const items = await loadSourceItems(domain);
+  return items.map((it: SourceItem) => ({
+    id: it.id,
+    title: it.title,
+    subtitle: it.subtitle,
+    tier: inferTier(domain, it.source, it.tags || []),
+    entityId: it.id,
+    coverUrl: it.coverUrl,
+    source: it.source,
+    tags: it.tags,
+  }));
 }
 
 interface SourceItem {
@@ -147,9 +157,9 @@ async function loadSourceItems(domain: Domain): Promise<SourceItem[]> {
   }
 
   if (domain === 'game') {
-    const [{ data: games }, { data: tags }] = await Promise.all([
+    const [{ data: games }, tags] = await Promise.all([
       supabase.from('steam_games').select('id,steam_app_id,title,playtime_forever,playtime_2weeks,img_icon_url,img_logo_url,custom_cover,store_url,is_manual,metrics'),
-      supabase.from('steam_tags').select('id,game_id,tag,rating,note'),
+      fetchAll('steam_tags', 'id,game_id,tag,rating,note'),
     ]);
     const tagMap: Record<string, any[]> = {};
     for (const t of tags || []) {
@@ -173,9 +183,9 @@ async function loadSourceItems(domain: Domain): Promise<SourceItem[]> {
   }
 
   if (domain === 'music_sing' || domain === 'music_like') {
-    const [{ data: songs }, { data: tags }, { data: covers }] = await Promise.all([
+    const [{ data: songs }, tags, { data: covers }] = await Promise.all([
       supabase.from('music_list').select('id,title,artist,album,duration,netease_id'),
-      supabase.from('music_tags').select('id,music_id,tag,likability,singability,voice,note'),
+      fetchAll('music_tags', 'id,music_id,tag,likability,singability,voice,note'),
       supabase.from('music_covers').select('netease_id,cover_url'),
     ]);
     const tagMap: Record<string, any[]> = {};
@@ -199,9 +209,9 @@ async function loadSourceItems(domain: Domain): Promise<SourceItem[]> {
   }
 
   if (domain === 'meal') {
-    const [{ data }, { data: tags }] = await Promise.all([
+    const [{ data }, tags] = await Promise.all([
       supabase.from('meals').select('id,title,rating'),
-      supabase.from('meal_tags').select('id,meal_id,tag,note'),
+      fetchAll('meal_tags', 'id,meal_id,tag,note'),
     ]);
     const tagMap: Record<string, any[]> = {};
     for (const t of tags || []) {
@@ -218,12 +228,4 @@ async function loadSourceItems(domain: Domain): Promise<SourceItem[]> {
   }
 
   return [];
-}
-
-export async function saveRanking(domain: Domain, entityId: string, tier: Tier) {
-  const { error } = await supabase.from('rankings').upsert(
-    { domain, entity_id: entityId, tier, updated_at: new Date().toISOString() },
-    { onConflict: 'domain,entity_id' }
-  );
-  if (error) throw error;
 }

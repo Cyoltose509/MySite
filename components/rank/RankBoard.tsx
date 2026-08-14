@@ -9,13 +9,12 @@ import {
   modalOverlayStyle, modalStyle, modalCloseStyle, modalCoverPlaceholderStyle,
   badgeStyle,
 } from '@/lib/card-styles';
-import { isAuthenticated } from '@/lib/auth';
 import { getQuickSearchIndex } from '@/lib/search';
 import { proxyCoverUrl } from '@/lib/imgProxy';
 import { supabase } from '@/lib/supabase';
 import {
   type Tier, type RankItem, type Domain, TIERS, TIER_COLORS, TIER_TEXT,
-  loadRankItems, saveRanking,
+  loadRankItems, fetchAll,
 } from '@/lib/rank';
 
 interface Props {
@@ -32,10 +31,7 @@ export default function RankBoard({ domain, title, icon = '📊', backHref = '/'
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [unlocked, setUnlocked] = useState(false);
   const [search, setSearch] = useState('');
-  const [draggingId, setDraggingId] = useState<string | null>(null);
-  const [dragSource, setDragSource] = useState<Tier | null>(null);
   const [detailItem, setDetailItem] = useState<RankItem | null>(null);
   const [exporting, setExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
@@ -46,7 +42,6 @@ export default function RankBoard({ domain, title, icon = '📊', backHref = '/'
   const boardRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setUnlocked(isAuthenticated());
     load();
   }, [domain]);
 
@@ -79,11 +74,12 @@ export default function RankBoard({ domain, title, icon = '📊', backHref = '/'
 
   // 加载实体关联（双向）与唱K/吃次数，供详情卡展示（与列表页详情卡一致）
   const loadRefsAndCounts = async (refType: string) => {
-    const [{ data: refs }, { data: events }, { data: groups }] = await Promise.all([
-      supabase.from('entity_refs').select('*'),
-      supabase.from('event_logs').select('refs, group_id').not('refs', 'is', null).neq('refs', '[]'),
-      supabase.from('event_groups').select('id, name'),
+    const [refs, events, groups] = await Promise.all([
+      fetchAll('entity_refs', 'source_type,source_id,target_type,target_id'),
+      fetchAll('event_logs', 'refs, group_id'),
+      fetchAll('event_groups', 'id, name'),
     ]);
+    const validEvents = (events || []).filter((r: any) => r.refs && (!Array.isArray(r.refs) || r.refs.length > 0));
     const groupMap: Record<string, string> = {};
     for (const g of groups || []) groupMap[g.id] = g.name;
 
@@ -111,7 +107,7 @@ export default function RankBoard({ domain, title, icon = '📊', backHref = '/'
 
     const singCounts: Record<string, number> = {};
     const eatCounts: Record<string, number> = {};
-    for (const e of events || []) {
+    for (const e of validEvents) {
       const isEat = groupMap[e.group_id] === '大餐';
       for (const ref of (e.refs || []) as any[]) {
         if (!ref?.id) continue;
@@ -138,31 +134,6 @@ export default function RankBoard({ domain, title, icon = '📊', backHref = '/'
   }, [byTier, search]);
 
   const total = useMemo(() => TIERS.reduce((s, t) => s + byTier[t].length, 0), [byTier]);
-
-  const moveItem = async (id: string, from: Tier, to: Tier) => {
-    if (!unlocked) return;
-    if (from === to) return;
-    const item = byTier[from].find((x) => x.id === id);
-    if (!item) return;
-
-    setByTier((prev) => {
-      const next = { ...prev, [from]: prev[from].filter((x) => x.id !== id) };
-      next[to] = [...next[to], { ...item, tier: to }].sort((a, b) => a.title.localeCompare(b.title, 'zh-CN'));
-      return next;
-    });
-
-    try {
-      await saveRanking(domain, item.entityId, to);
-    } catch (e: any) {
-      // 回滚
-      setByTier((prev) => {
-        const next = { ...prev, [to]: prev[to].filter((x) => x.id !== id) };
-        next[from] = [...next[from], { ...item, tier: from }].sort((a, b) => a.title.localeCompare(b.title, 'zh-CN'));
-        return next;
-      });
-      setError(`保存失败：${e.message}`);
-    }
-  };
 
   const exportPng = async () => {
     if (!boardRef.current || exporting) return;
@@ -309,11 +280,6 @@ export default function RankBoard({ domain, title, icon = '📊', backHref = '/'
             key={tier}
             tier={tier}
             items={filteredByTier[tier]}
-            unlocked={unlocked}
-            isDragging={!!draggingId}
-            onDragStart={(item) => { setDraggingId(item.id); setDragSource(item.tier); }}
-            onDragEnd={() => { setDraggingId(null); setDragSource(null); }}
-            onDrop={(id) => { if (dragSource) moveItem(id, dragSource, tier); }}
             onOpenDetail={setDetailItem}
           />
         ))}
@@ -337,24 +303,12 @@ export default function RankBoard({ domain, title, icon = '📊', backHref = '/'
 function TierRow({
   tier,
   items,
-  unlocked,
-  isDragging,
-  onDragStart,
-  onDragEnd,
-  onDrop,
   onOpenDetail,
 }: {
   tier: Tier;
   items: RankItem[];
-  unlocked: boolean;
-  isDragging: boolean;
-  onDragStart: (item: RankItem) => void;
-  onDragEnd: () => void;
-  onDrop: (id: string) => void;
   onOpenDetail: (item: RankItem) => void;
 }) {
-  const [over, setOver] = useState(false);
-
   const isLast = tier === '拉完了';
 
   return (
@@ -384,37 +338,24 @@ function TierRow({
         {tier}
       </div>
       <div
-        onDragOver={(e) => { e.preventDefault(); setOver(true); }}
-        onDragLeave={() => setOver(false)}
-        onDrop={(e) => {
-          e.preventDefault();
-          setOver(false);
-          const id = e.dataTransfer.getData('text/plain');
-          if (id) onDrop(id);
-        }}
         style={{
           flex: 1,
           display: 'grid',
           gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))',
           alignItems: 'start',
           gap: 10,
-          background: over ? 'rgba(99,102,241,0.08)' : 'transparent',
-          transition: 'background 0.15s',
           borderRadius: 10,
           minHeight: 120,
           padding: 4,
         }}
       >
-        {items.length === 0 && !isDragging && (
-          <span style={{ color: C.textDead, fontSize: 12, alignSelf: 'center' }}>拖拽项目到这里</span>
+        {items.length === 0 && (
+          <span style={{ color: C.textDead, fontSize: 12, alignSelf: 'center' }}>暂无</span>
         )}
         {items.map((item) => (
           <PosterCard
             key={item.id}
             item={item}
-            unlocked={unlocked}
-            onDragStart={() => onDragStart(item)}
-            onDragEnd={onDragEnd}
             onClick={() => onOpenDetail(item)}
           />
         ))}
@@ -425,26 +366,13 @@ function TierRow({
 
 function PosterCard({
   item,
-  unlocked,
-  onDragStart,
-  onDragEnd,
   onClick,
 }: {
   item: RankItem;
-  unlocked: boolean;
-  onDragStart: () => void;
-  onDragEnd: () => void;
   onClick: () => void;
 }) {
   return (
     <div
-      draggable={unlocked}
-      onDragStart={(e) => {
-        e.dataTransfer.setData('text/plain', item.id);
-        e.dataTransfer.effectAllowed = 'move';
-        onDragStart();
-      }}
-      onDragEnd={onDragEnd}
       onClick={onClick}
       title={item.title}
       style={{
@@ -452,7 +380,7 @@ function PosterCard({
         borderRadius: 10,
         overflow: 'hidden',
         background: C.border,
-        cursor: unlocked ? 'grab' : 'pointer',
+        cursor: 'pointer',
         border: `1px solid ${C.borderLit}`,
         boxShadow: '0 2px 4px rgba(0,0,0,0.25)',
       }}
