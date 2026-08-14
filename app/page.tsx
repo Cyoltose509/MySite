@@ -210,6 +210,14 @@ export default function DashboardPage() {
           border: '1px solid ' + C.border, background: C.surface,
           color: C.textSec, textDecoration: 'none', fontWeight: 600,
         }}>📍 位置分布</Link>
+        {unlocked && (
+          <Link href="/finance" style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            padding: '8px 16px', borderRadius: 12, fontSize: 13,
+            border: '1px solid ' + C.accent, background: C.surface,
+            color: C.accentLt, textDecoration: 'none', fontWeight: 600,
+          }}>💰 资产变动</Link>
+        )}
       </nav>
 
       {/* 数据概览 - 番剧 & 音乐 & 睡眠统计卡片 */}

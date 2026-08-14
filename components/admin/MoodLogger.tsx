@@ -58,6 +58,7 @@ export function MoodLogger() {
           p_note: note || null,
           p_mood_score: moodScore || null,
           p_visibility: visibility,
+          p_created_at: customDate ? new Date(customDate).toISOString() : null,
         });
       } else {
         result = await supabase.rpc('fn_save_mood_log', {
@@ -99,7 +100,7 @@ export function MoodLogger() {
     setNote(log.note || '');
     setMoodScore(log.mood_score || 6);
     setVisibility(log.visibility);
-    setCustomDate(log.created_at ? new Date(log.created_at).toISOString().slice(0, 16) : '');
+    setCustomDate(log.created_at ? toLocalInput(log.created_at) : '');
     setMessage(null);
   };
 
@@ -175,6 +176,14 @@ export function MoodLogger() {
     setFillingGaps(false);
   };
   const scoreLabel = (n: number) => MOOD_SCORE_LABELS[n] || n;
+
+  // UTC 时间戳 -> 本地 datetime-local 字符串（修正编辑时显示倒退 8 小时）
+  const toLocalInput = (iso: string) => {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+    return local.toISOString().slice(0, 16);
+  };
 
   return (
     <div style={styles.card}>
