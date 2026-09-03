@@ -8,6 +8,14 @@ import type { EventGroup, EventLog } from '@/lib/types';
 
 const PAGE_SIZE = 30;
 
+// 本地日期 YYYY-MM-DD（toISOString 是 UTC，0~8 点本地时间会被算到前一天）
+const localDateStr = (d: Date): string => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
 export function EventCounter() {
   const [groups, setGroups] = useState<EventGroup[]>([]);
   const [allLogs, setAllLogs] = useState<EventLog[]>([]);
@@ -23,7 +31,7 @@ export function EventCounter() {
   const [newGroupPrivate, setNewGroupPrivate] = useState(false);
 
   // 记录事件
-  const [recordDate, setRecordDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [recordDate, setRecordDate] = useState(() => localDateStr(new Date()));
   const [recordTime, setRecordTime] = useState(() => {
     const now = new Date();
     return `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
@@ -40,6 +48,8 @@ export function EventCounter() {
   const [mealSearch, setMealSearch] = useState('');
   const [mealAmount, setMealAmount] = useState('');
   const [songIndex, setSongIndex] = useState<Record<string, string>>({});
+  // 学钢琴时长（分钟）
+  const [durationMin, setDurationMin] = useState('');
 
   useEffect(() => {
     fetchGroups();
@@ -119,7 +129,7 @@ export function EventCounter() {
   const totalEvents = allLogs.length;
 
   // ─── 记录事件 ───
-  const logEvent = async (groupId: string, refs?: {id:string;title:string}[]) => {
+  const logEvent = async (groupId: string, refs?: {id:string;title:string}[], pDurationMin?: number | null) => {
     setLoading(true);
     try {
       const eventAt = new Date(`${recordDate}T${recordTime}:00`).toISOString();
@@ -133,6 +143,7 @@ export function EventCounter() {
         p_hash: getSession() || '',
         p_group_id: groupId,
         p_event_at: eventAt,
+        p_duration_min: pDurationMin != null ? pDurationMin : null,
         p_refs: p_refs.length > 0 ? p_refs : null,
       });
       if (error) {
@@ -143,6 +154,7 @@ export function EventCounter() {
         setMessage({ text: '✅ 已记录', type: 'ok' });
         setSelectedRefs([]);
         setMealAmount('');
+        setDurationMin('');
         fetchAllLogs();
       }
     } catch (e: any) {
@@ -152,7 +164,7 @@ export function EventCounter() {
   };
 
   // ─── 更新已有事件 ───
-  const updateLogRefs = async (logId: string, refs: {id:string;title:string}[], groupId: string) => {
+  const updateLogRefs = async (logId: string, refs: {id:string;title:string}[], groupId: string, pDurationMin?: number | null) => {
     setLoading(true);
     try {
       let p_refs = refs || [];
@@ -164,12 +176,15 @@ export function EventCounter() {
       const { error } = await supabase.from('event_logs').update({
         refs: p_refs.length > 0 ? p_refs : null,
         event_at: eventAt,
+        duration_min: pDurationMin != null ? pDurationMin : null,
       }).eq('id', logId);
       if (error) {
         setMessage({ text: `❌ 更新失败: ${error.message}`, type: 'err' });
       } else {
         setMessage({ text: '✅ 已更新', type: 'ok' });
         setSelectedRefs([]);
+        setMealAmount('');
+        setDurationMin('');
         setEditLogId(null);
         setShowSongPicker(null);
         fetchAllLogs();
@@ -292,10 +307,11 @@ export function EventCounter() {
           {groups.map(g => {
             const isKaraoke = g.name === '唱k' || g.name === '户外唱歌';
             const isMeal = g.name === '大餐';
-            const needsPicker = isKaraoke || isMeal;
+            const isPiano = g.name === '学钢琴';
+            const needsPicker = isKaraoke || isMeal || isPiano;
             return (
             <button key={g.id} onClick={() => {
-              if (needsPicker) { setShowSongPicker(g.id!); setSelectedRefs([]); setSongSearch(''); setMealSearch(''); }
+              if (needsPicker) { setShowSongPicker(g.id!); setSelectedRefs([]); setSongSearch(''); setMealSearch(''); setDurationMin(''); }
               else logEvent(g.id!);
             }} disabled={loading} style={{
               ...styles.recordBtn,
@@ -315,6 +331,7 @@ export function EventCounter() {
       {showSongPicker && (() => {
         const pickerGroup = groups.find(g => g.id === showSongPicker);
         const isMeal = pickerGroup?.name === '大餐';
+        const isPiano = pickerGroup?.name === '学钢琴';
         const list = isMeal ? mealList : songList;
         const search = isMeal ? mealSearch : songSearch;
         const setSearch = isMeal ? setMealSearch : setSongSearch;
@@ -355,14 +372,27 @@ export function EventCounter() {
                 style={{...styles.input, width:80}} />
             </div>
           )}
+          {isPiano && (
+            <div style={{display:'flex',gap:6,alignItems:'center',marginTop:4}}>
+              <span style={{fontSize:11,color:'#a1a1aa'}}>时长（分钟）</span>
+              <input value={durationMin} onChange={e => setDurationMin(e.target.value)} placeholder="如 45" type="number"
+                style={{...styles.input, width:80}} />
+            </div>
+          )}
+          {(() => {
+            const raw = durationMin ? Number(durationMin) : null;
+            const dur = (raw != null && !isNaN(raw) && raw >= 0) ? raw : null;
+            return (
           <div style={{display:'flex',gap:6,marginTop:6}}>
-            <input ref={songInputRef} value={search} onChange={e => setSearch(e.target.value)} placeholder={searchPlaceholder}
-              style={styles.input} />
+            {!isPiano && (
+              <input ref={songInputRef} value={search} onChange={e => setSearch(e.target.value)} placeholder={searchPlaceholder}
+                style={styles.input} />
+            )}
             <button onClick={() => {
               if (editLogId) {
-                updateLogRefs(editLogId, selectedRefs, showSongPicker);
+                updateLogRefs(editLogId, selectedRefs, showSongPicker, dur);
               } else {
-                logEvent(showSongPicker, selectedRefs);
+                logEvent(showSongPicker, selectedRefs, dur);
                 setShowSongPicker(null);
               }
             }} style={{...styles.saveBtn, width: editLogId ? 'auto' : 80, padding: editLogId ? '6px 14px' : undefined}}>
@@ -370,11 +400,14 @@ export function EventCounter() {
             </button>
             {!editLogId && (
               <button onClick={() => {
-                logEvent(showSongPicker);
+                logEvent(showSongPicker, undefined, dur);
                 setShowSongPicker(null);
               }} style={{...styles.saveBtn, background:'#52525b', width:60}}>跳过</button>
             )}
           </div>
+            );
+          })()}
+          {!isPiano && (
           <div style={{maxHeight:200,overflow:'auto',marginTop:8}}>
             {list.filter(s => {
               if (!search) return true;
@@ -389,6 +422,7 @@ export function EventCounter() {
                 </div>
               ))}
             </div>
+          )}
         </div>
         );
       })()}
@@ -458,7 +492,8 @@ export function EventCounter() {
             const refs = l.refs || [];
             const isKaraoke = g && (g.name === '唱k' || g.name === '户外唱歌');
             const isMeal = g?.name === '大餐';
-            const needsEdit = isKaraoke || isMeal;
+            const isPiano = g?.name === '学钢琴';
+            const needsEdit = isKaraoke || isMeal || !!isPiano;
             return (
               <div key={l.id} style={styles.logRow}>
                 <span style={{ color: g?.color || '#818cf8', fontSize: 18, minWidth: 30 }}>{g?.icon}</span>
@@ -472,7 +507,15 @@ export function EventCounter() {
                     {refs.map((s:any) => s.title + (s.amount ? ` ¥${s.amount}` : '')).join(' / ')}
                   </span>
                 ) : needsEdit ? (
-                  <span style={{ color: '#52525b', fontSize: 11, flex: 1 }}>{isMeal ? '未记录大餐' : '未记录歌曲'}</span>
+                  isPiano ? (
+                    (l.duration_min != null) ? (
+                      <span style={{ color: '#818cf8', fontSize: 11, flex: 1 }}>⏱ {l.duration_min} 分钟</span>
+                    ) : (
+                      <span style={{ color: '#52525b', fontSize: 11, flex: 1 }}>未记录时长</span>
+                    )
+                  ) : (
+                    <span style={{ color: '#52525b', fontSize: 11, flex: 1 }}>{isMeal ? '未记录大餐' : '未记录歌曲'}</span>
+                  )
                 ) : null}
                 {needsEdit && (
                   <button onClick={(ev) => {
@@ -482,13 +525,14 @@ export function EventCounter() {
                     setSelectedRefs(refs);
                     setSongSearch('');
                     setMealSearch('');
-                    // Set time from event
+                    setDurationMin(l.duration_min != null ? String(l.duration_min) : '');
+                    // Set time from event（本地日期，避免 UTC 0~8 点算到前一天）
                     const d = new Date(l.event_at);
-                    setRecordDate(d.toISOString().slice(0, 10));
+                    setRecordDate(localDateStr(d));
                     setRecordTime(d.toTimeString().slice(0, 5));
                   }}
                     style={{ background:'rgba(99,102,241,0.15)', border:'none', color:'#818cf8', fontSize: 11, cursor:'pointer', padding:'2px 8px', borderRadius: 4 }}>
-                    ✏️ 编辑{isMeal ? '大餐' : '歌曲'}
+                    ✏️ 编辑{isMeal ? '大餐' : (isPiano ? '时长' : '歌曲')}
                   </button>
                 )}
                 <span onClick={() => deleteLog(l.id!)} style={{ color: '#f87171', fontSize: 11, cursor: 'pointer', marginLeft: 'auto' }}>点此删除</span>

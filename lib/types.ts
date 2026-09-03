@@ -27,6 +27,7 @@ export interface EventLog {
     id?: string;
     group_id: string;
     event_at: string;       // ISO timestamptz，精确到时分秒
+    duration_min?: number | null;  // 时长(分钟)，如学钢琴练习时长
     created_at?: string;
     note?: string;
     refs?: {id:string;title:string}[];  // song refs for karaoke events

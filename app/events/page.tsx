@@ -9,7 +9,7 @@ import { C, pageStyle, headerStyle, h1Style, backLinkStyle, emptyStyle, loadingC
 import { TIME_SCALES, type TimeScale } from '@/lib/types';
 
 interface EventGroup { id: string; name: string; icon: string; color: string; is_private: boolean; }
-interface RawEvent { id: string; group_id: string; event_at: string; note?: string; refs?: {id:string;title:string}[]; }
+interface RawEvent { id: string; group_id: string; event_at: string; note?: string; refs?: {id:string;title:string}[]; duration_min?: number | null; }
 
 const CHART_H = 420;
 const PAD_T = 10;
@@ -28,7 +28,7 @@ export default function EventsPage() {
   const [animReady, setAnimReady] = useState(false);
   const tooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const [tooltip, setTooltip] = useState<{ x: number; y: number; key: string; items: { name: string; icon: string; color: string; count: number; songs?: {title:string;amount?:number}[] }[] } | null>(null);
+  const [tooltip, setTooltip] = useState<{ x: number; y: number; key: string; items: { name: string; icon: string; color: string; count: number; songs?: {title:string;amount?:number}[]; duration?: number }[] } | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -75,12 +75,13 @@ export default function EventsPage() {
             event_at: r.event_at as string,
             note: (r.note as string) || undefined,
             refs: (r.refs as { id: string; title: string }[]) || undefined,
+            duration_min: (r.duration_min as number | null) ?? undefined,
           }));
         }
       }
     }
     if (!events.length) {
-      const { data: eData } = await supabase.from('event_logs').select('id, group_id, event_at, note, refs').order('event_at').limit(5000);
+      const { data: eData } = await supabase.from('event_logs').select('id, group_id, event_at, note, refs, duration_min').order('event_at').limit(5000);
       events = (eData || []) as RawEvent[];
     }
     setRawEvents(events);
@@ -200,6 +201,15 @@ export default function EventsPage() {
     }
   };
 
+  // 时长格式化：分钟 → “X 分钟” / “X小时Y分”
+  const fmtDuration = (min: number): string => {
+    if (min <= 0) return '';
+    if (min < 60) return `${min} 分钟`;
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    return m > 0 ? `${h} 小时 ${m} 分` : `${h} 小时`;
+  };
+
   if (loading) return (<div style={loadingContainerStyle}><div style={spinnerStyle}/><p style={loadingTextStyle}>加载中...</p></div>);
 
   return (
@@ -263,6 +273,12 @@ export default function EventsPage() {
                     <span style={{ fontSize: 12, color: '#e4e4e7' }}>{item.icon} {item.name}</span>
                     <span style={{ fontSize: 12, fontWeight: 700, color: item.color, marginLeft: 'auto' }}>{item.count}</span>
                   </div>
+                  {(item.duration ?? 0) > 0 && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 2 }}>
+                      <span style={{ fontSize: 11, color: '#a1a1aa' }}>⏱ 总时长</span>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: '#e4e4e7', marginLeft: 'auto' }}>{fmtDuration(item.duration ?? 0)}</span>
+                    </div>
+                  )}
                   {item.songs && item.songs.length > 0 && (
                     <div style={{ marginLeft: 14, marginBottom: 4, padding: '4px 6px', background: 'rgba(255,255,255,0.03)', borderRadius: 4, maxHeight: 120, overflowY: 'auto' }}>
                       {item.songs.map((s, si) => (
@@ -331,22 +347,29 @@ export default function EventsPage() {
                         }
                         const items = segments.map(s => {
                           const isRefGroup = s.g.name === '唱k' || s.g.name === '户外唱歌' || s.g.name === '大餐';
+                          const isPiano = s.g.name === '学钢琴';
                           let songs: {title:string}[] | undefined;
-                          if (isRefGroup) {
+                          let duration = 0;
+                          if (isRefGroup || isPiano) {
                             const bucketEvents = rawEvents.filter(ev => {
                               if (ev.group_id !== s.g.id) return false;
                               const ts = new Date(ev.event_at).getTime();
                               return ts >= keyTs && ts < tE;
                             });
-                            const songSet = new Map<string, {title:string;amount?:number}>();
-                            for (const ev of bucketEvents) {
-                              if (ev.refs) for (const sr of ev.refs as any[]) {
-                                if (!songSet.has(sr.title)) songSet.set(sr.title, {title:sr.title, amount:sr.amount});
+                            if (isRefGroup) {
+                              const songSet = new Map<string, {title:string;amount?:number}>();
+                              for (const ev of bucketEvents) {
+                                if (ev.refs) for (const sr of ev.refs as any[]) {
+                                  if (!songSet.has(sr.title)) songSet.set(sr.title, {title:sr.title, amount:sr.amount});
+                                }
                               }
+                              if (songSet.size > 0) songs = [...songSet.values()];
                             }
-                            if (songSet.size > 0) songs = [...songSet.values()];
+                            if (isPiano) {
+                              duration = bucketEvents.reduce((a, ev) => a + (ev.duration_min || 0), 0);
+                            }
                           }
-                          return { name: s.g.name, icon: s.g.icon, color: s.g.color, count: s.cnt, songs };
+                          return { name: s.g.name, icon: s.g.icon, color: s.g.color, count: s.cnt, songs, duration };
                         });
                         const barTop = PAD_T + plotH - (b.total / maxCount) * plotH;
                         const tooltipY = barTop - 10; // just above the bar
