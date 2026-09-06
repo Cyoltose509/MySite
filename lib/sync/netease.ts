@@ -11,6 +11,7 @@
 
 const PLAYLIST_ID = '7611680006';
 const NETEASE_BASE = 'https://music.163.com';
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 
 export interface NeteaseTrack {
   id: string;
@@ -121,22 +122,20 @@ export async function fetchNeteasePlaylist(
  * Fetch with CORS proxy fallback for browser, direct for CLI
  */
 async function neteaseFetch(url: string): Promise<Response> {
-  // Try direct first (works in Node CLI, may work in some browsers)
-  try {
-    const resp = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-        Referer: NETEASE_BASE,
-      },
-      signal: AbortSignal.timeout(15000),
-    });
-    if (resp.ok) return resp;
-    throw new Error(`HTTP ${resp.status}`);
-  } catch {
-    // Browser CORS fallback: use public proxy
+  // 首选：自建 img-proxy Edge Function（稳定，规避浏览器 CORS）
+  if (SUPABASE_URL) {
+    try {
+      const resp = await fetch(
+        `${SUPABASE_URL}/functions/v1/img-proxy?u=${encodeURIComponent(url)}&_=${Date.now()}`,
+        { signal: AbortSignal.timeout(20000) },
+      );
+      if (resp.ok) return resp;
+    } catch {
+      // fall through
+    }
   }
 
-  // CORS proxy fallbacks for browser
+  // 回退：公共 CORS 代理（可能不稳定/需 key）
   const proxies = [
     (u: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
     (u: string) => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
@@ -154,7 +153,7 @@ async function neteaseFetch(url: string): Promise<Response> {
   }
 
   throw new Error(
-    '网易云请求失败：浏览器 CORS 限制。请使用命令行同步：npm run sync:music'
+    '网易云请求失败：代理不可用。请使用命令行同步：npm run sync:music'
   );
 }
 
