@@ -2,8 +2,8 @@
 
 import { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import Link from 'next/link';
-import { supabase } from '@/lib/supabase';
 import { isAuthenticated } from '@/lib/auth';
+import { fetchAll } from '@/lib/rank';
 import { TYPE_LABELS, TYPE_COLORS, utcToBeijing } from '@/lib/sleep-utils';
 import { detectAnomalies } from '@/lib/insights';
 
@@ -53,9 +53,16 @@ export default function SleepPage() {
 
   // ===== 数据获取函数 =====
   const fetchLogs = async () => {
-    const { data } = await supabase.from('health_sleep').select('*')
-      .order('start_date', { ascending: true }).limit(5000);
-    setLogs(data || []);
+    // PostgREST 服务端 max_rows（默认 1000）会把 limit(5000) 静默截断——
+    // 记录超过 1000 条后旧数据会被吞。必须用 range 分页拉全（同排行榜 fetchAll）。
+    try {
+      const rows = (await fetchAll('health_sleep', '*')) as SleepLog[];
+      rows.sort((a, b) => a.start_date.localeCompare(b.start_date));
+      setLogs(rows);
+    } catch (e) {
+      console.error('加载睡眠数据失败', e);
+      setLogs([]);
+    }
     setLoading(false);
   };
 

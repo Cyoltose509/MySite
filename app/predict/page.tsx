@@ -4,6 +4,7 @@ import { useEffect, useState, useMemo } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { getPrivateSession } from '@/lib/auth';
+import { fetchAll } from '@/lib/rank';
 import { usePrivateAccess } from '@/lib/private';
 import {
   C, pageStyle, headerStyle, h1Style, backLinkStyle, emptyStyle,
@@ -70,17 +71,22 @@ export default function PredictPage() {
     }
     setGroups(groupsData);
 
-    const [{ data: lData }, { data: mData }, { data: tData }, { data: mealData }, moodRes, sleepRes] =
+    // PostgREST 服务端 max_rows（默认 1000）会静默截断不带分页的大表查询——
+    // event_logs / music_tags / health_sleep 都已或即将超 1000 行，必须 range 分页拉全，
+    // 否则预测中心的相关性/间隔分析一直在用被砍掉一半的样本算。
+    // .catch 兜底：保持旧行为（单个表失败不炸整页）。
+    const all = (t: string, c: string) => fetchAll(t, c).catch(() => [] as any[]);
+    const [lData, mData, tData, mealData, moodRes, sleepLogs] =
       await Promise.all([
-        supabase.from('event_logs').select('id, group_id, event_at, refs'),
-        supabase.from('music_list').select('id, title, artist, created_at'),
-        supabase.from('music_tags').select('music_id, singability, likability'),
-        supabase.from('meals').select('id, title, rating'),
+        all('event_logs', 'id, group_id, event_at, refs'),
+        all('music_list', 'id, title, artist, created_at'),
+        all('music_tags', 'music_id, singability, likability'),
+        all('meals', 'id, title, rating'),
         supabase.rpc('fn_get_mood_logs_public'),
-        supabase.from('health_sleep').select('start_date, end_date, sleep_type, duration_minutes'),
+        all('health_sleep', 'start_date, end_date, sleep_type, duration_minutes'),
       ]);
 
-    let mergedLogs = (lData || []) as EventLogLite[];
+    let mergedLogs = (lData || []) as unknown as EventLogLite[];
     if (unlocked) {
       const hash = getPrivateSession();
       if (hash) {
@@ -115,7 +121,7 @@ export default function PredictPage() {
     setMealById(ml);
 
     setMoodData((moodRes.data || []) as MoodPoint[]);
-    setSleepData((sleepRes.data || []) as SleepSeg[]);
+    setSleepData((sleepLogs || []) as unknown as SleepSeg[]);
 
     // 公开标签时段（不含城市）：始终拉取，用于公开标签规律
     const { data: tag } = await supabase.rpc('fn_get_location_tag_stays');

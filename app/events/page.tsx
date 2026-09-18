@@ -4,6 +4,7 @@ import { useEffect, useState, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { getPrivateSession } from '@/lib/auth';
+import { fetchAll } from '@/lib/rank';
 import { usePrivateAccess } from '@/lib/private';
 import { C, pageStyle, headerStyle, h1Style, backLinkStyle, emptyStyle, loadingContainerStyle, spinnerStyle, loadingTextStyle } from '@/lib/card-styles';
 import { TIME_SCALES, type TimeScale } from '@/lib/types';
@@ -81,8 +82,11 @@ export default function EventsPage() {
       }
     }
     if (!events.length) {
-      const { data: eData } = await supabase.from('event_logs').select('id, group_id, event_at, note, refs, duration_min').order('event_at').limit(5000);
-      events = (eData || []) as RawEvent[];
+      // PostgREST max_rows（默认 1000）会静默截断 limit(5000)——event_logs 超 1000 行后
+      // 老事件会被吞。range 分页拉全后按时间排序（保持与原 order('event_at') 一致）。
+      const rows = await fetchAll('event_logs', 'id, group_id, event_at, note, refs, duration_min')
+        .catch(() => [] as any[]);
+      events = (rows as unknown as RawEvent[]).sort((a, b) => a.event_at.localeCompare(b.event_at));
     }
     setRawEvents(events);
     setLoading(false);
