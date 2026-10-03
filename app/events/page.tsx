@@ -60,6 +60,8 @@ export default function EventsPage() {
       const { data: gData } = await supabase.from('event_groups').select('*').order('sort_order');
       gs = (gData || []) as EventGroup[];
     }
+    // 时长型活动（学钢琴等已迁到「自律养成」）不参与事件计数
+    gs = gs.filter((g) => (g as { countable?: boolean }).countable !== false);
     setGroups(gs);
     setVisibleGroups(new Set(gs.map(g => g.id)));
 
@@ -88,7 +90,9 @@ export default function EventsPage() {
         .catch(() => [] as any[]);
       events = (rows as unknown as RawEvent[]).sort((a, b) => a.event_at.localeCompare(b.event_at));
     }
-    setRawEvents(events);
+    // 双保险：即使分组列表没带上 countable 字段，也按分组白名单丢弃时长型记录
+    const countableIds = new Set(gs.map(g => g.id));
+    setRawEvents(events.filter(e => countableIds.has(e.group_id)));
     setLoading(false);
     setTimeout(() => setAnimReady(true), 100);
   };

@@ -10,6 +10,8 @@ import { MOOD_EMOJIS, MOOD_SCORE_LABELS } from '@/lib/types';
 import { C, pageStyle, headerStyle, h1Style, backLinkStyle, loadingContainerStyle, spinnerStyle, loadingTextStyle } from '@/lib/card-styles';
 import { SleepTimeline } from '@/components/sleep/SleepTimeline';
 import { groupByDay } from '@/lib/sleep-utils';
+import { fetchAll } from '@/lib/rank';
+import { groupByDay as groupHabitsByDay, computeStats, fmtHM } from '@/lib/habit-utils';
 
 interface MoodLog {
   id: string;
@@ -39,6 +41,7 @@ export default function DashboardPage() {
   const [gameCount, setGameCount] = useState(0);
   const [mealCount, setMealCount] = useState(0);
   const [sleepAvg, setSleepAvg] = useState('--');
+  const [habitCards, setHabitCards] = useState<{ id: string; name: string; icon: string; totalMin: number; streak: number }[]>([]);
   const [loading, setLoading] = useState(true);
   const { unlocked, refreshKey } = usePrivateAccess();
 
@@ -86,6 +89,8 @@ export default function DashboardPage() {
         .order('sort_order', { ascending: true });
       visibleGroups = (gData || []).map((g) => ({ ...g, count: 0 }));
     }
+    // 时长型活动（学钢琴等已迁到「自律养成」）不参与事件计数
+    visibleGroups = visibleGroups.filter((g) => (g as { countable?: boolean }).countable !== false);
 
     // 解锁后一次性拉取全部日志以计算真实计数（含私密组）；否则逐组查公开计数
     let allLogs: Array<{ group_id: string }> = [];
@@ -149,6 +154,20 @@ export default function DashboardPage() {
       .select('*')
       .gte('start_date', twoDaysAgo)
       .order('start_date', { ascending: true });
+
+    // 自律养成卡片：总时长 + 最长连续天数
+    try {
+      const [hs, ss] = await Promise.all([
+        fetchAll('habits', 'id,name,icon,sort_order'),
+        fetchAll('habit_sessions', 'id,habit_id,start_at,duration_min,note'),
+      ]);
+      const habits = (hs as any[]).sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+      const sessions = ss as any[];
+      setHabitCards(habits.map((h) => {
+        const st = computeStats(groupHabitsByDay(sessions.filter((s) => s.habit_id === h.id)));
+        return { id: h.id, name: h.name, icon: h.icon || '🎯', totalMin: st?.totalMin ?? 0, streak: st?.streak ?? 0 };
+      }));
+    } catch { /* 私密或网络异常时静默跳过该模块 */ }
 
     setEventGroups(groupsWithCount);
     // 只显示最近一天的睡眠
@@ -306,6 +325,37 @@ export default function DashboardPage() {
                 <div style={{ fontSize: 28, marginBottom: 8 }}>{g.icon}</div>
                 <div style={{ fontSize: 24, fontWeight: 700, color: C.text, marginBottom: 4 }}>{g.count || 0}</div>
                 <div style={{ fontSize: 12, color: C.textSec }}>{g.name}</div>
+              </div>
+            </Link>
+          ))}
+        </div>
+      </section>
+
+      {/* 自律养成总览 */}
+      <section style={{ marginBottom: 32 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <h2 style={{ fontSize: 16, fontWeight: 600, color: C.text, margin: 0 }}>🎯 自律养成</h2>
+          <Link href="/discipline" style={{ fontSize: 12, color: C.accent, textDecoration: 'none' }}>查看详情 →</Link>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 12 }}>
+          {habitCards.length === 0 && (
+            <p style={{ textAlign: 'center', color: C.textSec, fontSize: 13, padding: 20, gridColumn: '1 / -1' }}>
+              暂无习惯，去 admin → 自律养成 里添加
+            </p>
+          )}
+          {habitCards.map(h => (
+            <Link key={h.id} href="/discipline" style={{ textDecoration: 'none' }}>
+              <div style={{
+                padding: 20, borderRadius: 16, background: C.surface, border: '1px solid ' + C.border,
+                textAlign: 'center', transition: 'border-color 0.15s',
+              }}>
+                <div style={{ fontSize: 28, marginBottom: 8 }}>{h.icon}</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: C.text, marginBottom: 4 }}>
+                  {h.totalMin ? fmtHM(h.totalMin) : '—'}
+                </div>
+                <div style={{ fontSize: 12, color: C.textSec }}>
+                  {h.name}{h.streak ? ` · 连续 ${h.streak} 天` : ''}
+                </div>
               </div>
             </Link>
           ))}

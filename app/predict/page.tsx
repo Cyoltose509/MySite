@@ -66,9 +66,15 @@ export default function PredictPage() {
       }
     }
     if (!groupsData.length) {
-      const { data: gData } = await supabase.from('event_groups').select('id, name, icon, color, sort_order').order('sort_order');
+      const { data: gData } = await supabase.from('event_groups').select('id, name, icon, color, sort_order, countable').order('sort_order');
       groupsData = (gData || []) as EventGroupLite[];
     }
+    // 时长型活动（学钢琴等已迁到「自律养成」）不进预测模型：
+    // 它们的「次数」没有意义（一天可能练 2~3 段），会污染间隔均值与频次预测。
+    const countableIds = new Set(
+      groupsData.filter((g) => (g as { countable?: boolean }).countable !== false).map((g) => g.id),
+    );
+    groupsData = groupsData.filter((g) => countableIds.has(g.id));
     setGroups(groupsData);
 
     // PostgREST 服务端 max_rows（默认 1000）会静默截断不带分页的大表查询——
@@ -86,7 +92,7 @@ export default function PredictPage() {
         all('health_sleep', 'start_date, end_date, sleep_type, duration_minutes'),
       ]);
 
-    let mergedLogs = (lData || []) as unknown as EventLogLite[];
+    let mergedLogs = ((lData || []) as unknown as EventLogLite[]).filter((l) => countableIds.has(l.group_id));
     if (unlocked) {
       const hash = getPrivateSession();
       if (hash) {

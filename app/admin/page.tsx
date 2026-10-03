@@ -9,6 +9,7 @@ import { MusicTagEditor } from '@/components/admin/MusicTagEditor';
 import { SteamGameEditor } from '@/components/admin/SteamGameEditor';
 import { MoodLogger } from '@/components/admin/MoodLogger';
 import { EventCounter } from '@/components/admin/EventCounter';
+import { HabitLogger } from '@/components/admin/HabitLogger';
 
 import { MealEditor } from '@/components/admin/MealEditor';
 import { LocationEditor } from '@/components/admin/LocationEditor';
@@ -16,7 +17,7 @@ import { PeopleEditor } from '@/components/admin/PeopleEditor';
 import { PeopleGraphEditor } from '@/components/admin/PeopleGraphEditor';
 import { PeopleTagEditor } from '@/components/admin/PeopleTagEditor';
 
-type TabId = 'sync' | 'music' | 'games' | 'meals' | 'mood' | 'events' | 'location' | 'people';
+type TabId = 'sync' | 'music' | 'games' | 'meals' | 'mood' | 'events' | 'discipline' | 'location' | 'people';
 
 const TABS: { id: TabId; label: string; icon: string }[] = [
   { id: 'sync', label: '数据同步', icon: '🔄' },
@@ -25,6 +26,7 @@ const TABS: { id: TabId; label: string; icon: string }[] = [
   { id: 'meals', label: '大餐标签', icon: '🍽️' },
   { id: 'mood', label: '心情记录', icon: '🧠' },
   { id: 'events', label: '事件计数', icon: '📅' },
+  { id: 'discipline', label: '自律养成', icon: '🎯' },
   { id: 'location', label: '位置停留', icon: '📍' },
   { id: 'people', label: '人物总览', icon: '👤' },
 ];
@@ -102,6 +104,7 @@ export default function AdminPage() {
         {activeTab === 'meals' && <MealEditor />}
         {activeTab === 'mood' && <MoodLogger />}
         {activeTab === 'events' && <EventCounter />}
+        {activeTab === 'discipline' && <HabitLogger />}
         {activeTab === 'location' && <LocationEditor />}
         {activeTab === 'people' && (
           <div>
