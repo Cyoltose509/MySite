@@ -34,6 +34,7 @@ export function HabitLogger() {
   });
   const [duration, setDuration] = useState('');
   const [note, setNote] = useState('');
+  const [editId, setEditId] = useState<string | null>(null);
 
   // 习惯管理
   const [newName, setNewName] = useState('');
@@ -67,23 +68,45 @@ export function HabitLogger() {
     return out;
   }, [habits, sessions]);
 
-  const addSession = async () => {
+  const saveSession = async () => {
     if (!habitId) { setMessage({ text: '请先选择习惯', type: 'err' }); return; }
     const d = parseInt(duration, 10);
     if (!d || d <= 0) { setMessage({ text: '请填写有效时长（分钟）', type: 'err' }); return; }
     setLoading(true);
-    const { error } = await supabase.from('habit_sessions').insert({
+    const payload = {
       habit_id: habitId,
       start_at: new Date(`${date}T${time}:00`).toISOString(),
       duration_min: d,
       note: note.trim() || null,
-    });
+    };
+    const { error } = editId
+      ? await supabase.from('habit_sessions').update(payload).eq('id', editId)
+      : await supabase.from('habit_sessions').insert(payload);
     setLoading(false);
-    if (error) { setMessage({ text: `❌ 记录失败: ${error.message}`, type: 'err' }); return; }
-    setMessage({ text: '✅ 已记录', type: 'ok' });
+    if (error) { setMessage({ text: `❌ ${editId ? '更新' : '记录'}失败: ${error.message}`, type: 'err' }); return; }
+    setMessage({ text: editId ? '✅ 已更新' : '✅ 已记录', type: 'ok' });
+    setEditId(null);
     setDuration('');
     setNote('');
     load();
+  };
+
+  // 把某条记录回填进录入表单（start_at 是 UTC，转本地日期/时间再回填）
+  const startEdit = (s: HabitSession) => {
+    const d = new Date(s.start_at);
+    setEditId(s.id);
+    setHabitId(s.habit_id);
+    setDate(localDateStr(d));
+    setTime(d.toTimeString().slice(0, 5));
+    setDuration(String(s.duration_min));
+    setNote(s.note || '');
+    setMessage(null);
+  };
+
+  const cancelEdit = () => {
+    setEditId(null);
+    setDuration('');
+    setNote('');
   };
 
   const removeSession = async (id: string) => {
@@ -155,9 +178,13 @@ export function HabitLogger() {
         </div>
       </div>
 
-      {/* 录入 */}
+      {/* 录入 / 编辑 */}
       <div style={S.section}>
-        <div style={S.sectionHeader}><span style={S.sectionTitle}>➕ 记录一次练习</span></div>
+        <div style={S.sectionHeader}>
+          <span style={{ ...S.sectionTitle, color: editId ? '#818cf8' : undefined }}>
+            {editId ? '✏️ 正在编辑记录' : '➕ 记录一次练习'}
+          </span>
+        </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
           {habits.map(h => (
             <button key={h.id} onClick={() => setHabitId(h.id)} style={{
@@ -178,8 +205,11 @@ export function HabitLogger() {
             placeholder="时长（分钟）" style={{ ...S.input, width: 120 }} />
           <input value={note} onChange={e => setNote(e.target.value)} placeholder="备注（可选）"
             style={{ ...S.input, flex: 1, minWidth: 160 }} />
-          <button onClick={addSession} disabled={loading}
-            style={{ ...S.saveBtn, opacity: loading ? 0.6 : 1 }}>记录</button>
+          <button onClick={saveSession} disabled={loading}
+            style={{ ...S.saveBtn, opacity: loading ? 0.6 : 1 }}>{editId ? '保存修改' : '记录'}</button>
+          {editId && (
+            <button onClick={cancelEdit} style={{ ...S.saveBtn, background: '#52525b' }}>取消</button>
+          )}
         </div>
       </div>
 
@@ -247,8 +277,12 @@ export function HabitLogger() {
           {paged.map(s => {
             const h = nameOf(s.habit_id);
             const d = new Date(s.start_at);
+            const editing = editId === s.id;
             return (
-              <div key={s.id} style={S.logRow}>
+              <div key={s.id} style={{
+                ...S.logRow,
+                ...(editing ? { border: '1px solid #3a3a5a', background: '#16162e' } : {}),
+              }}>
                 <span style={{ color: h?.color || '#818cf8', fontSize: 18, minWidth: 30 }}>{h?.icon || '•'}</span>
                 <span style={{ color: '#e4e4e7', fontSize: 14, fontWeight: 500, minWidth: 90 }}>{h?.name || '已删除'}</span>
                 <span style={{ color: '#a1a1aa', fontSize: 12, fontFamily: 'monospace', minWidth: 130 }}>
@@ -257,6 +291,10 @@ export function HabitLogger() {
                 <span style={{ color: h?.color || '#818cf8', fontSize: 12, flex: 1 }}>
                   ⏱ {fmtHM(s.duration_min)}{s.note ? ` · ${s.note}` : ''}
                 </span>
+                <button onClick={() => startEdit(s)}
+                  style={{ ...S.rowBtn, color: editing ? '#818cf8' : '#a1a1aa' }}>
+                  {editing ? '编辑中' : '编辑'}
+                </button>
                 <span onClick={() => removeSession(s.id)} style={{ color: '#f87171', fontSize: 11, cursor: 'pointer' }}>
                   删除
                 </span>
@@ -299,4 +337,5 @@ S.groupDelBtn = { background: 'none', border: 'none', color: '#f87171', cursor: 
 S.privacyBtn = { background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, padding: '0 4px' };
 S.statCard = { flex: '1 1 130px', maxWidth: 180, padding: '14px', borderRadius: 12, border: '1px solid', background: '#121224', textAlign: 'center' };
 S.logRow = { display: 'flex', alignItems: 'center', gap: 12, padding: '8px 14px', borderRadius: 8, background: '#121224' };
+S.rowBtn = { background: 'rgba(99,102,241,0.15)', border: 'none', fontSize: 11, cursor: 'pointer', padding: '2px 8px', borderRadius: 4 };
 S.pageBtn = { padding: '6px 14px', borderRadius: 8, border: '1px solid #2a2a40', background: '#121224', color: '#a1a1aa', cursor: 'pointer', fontSize: 12 };
