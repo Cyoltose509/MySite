@@ -10,6 +10,17 @@ const PAGE_SIZE = 20;
 const ICONS = ['🎹', '🏃', '📚', '🧘', '💪', '✍️', '🎨', '🗣', '🌱', '⏰'];
 const COLORS = ['#8d9c1c', '#6366f1', '#059669', '#db2777', '#d97706', '#2563eb', '#7c3aed'];
 
+/** 计时状态存 localStorage：换标签页、跳去别的页面、刷新浏览器都还在（用户要「全局记忆」） */
+const TIMER_KEY = 'datahub_habit_timer';
+
+const fmtElapsed = (ms: number): string => {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+};
+
 const localDateStr = (d: Date): string => {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -36,6 +47,10 @@ export function HabitLogger() {
   const [note, setNote] = useState('');
   const [editId, setEditId] = useState<string | null>(null);
 
+  // 计时器（开始 → 停止，自动算时长落库）
+  const [running, setRunning] = useState<{ habitId: string; name: string; icon: string; startAt: string } | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+
   // 习惯管理
   const [newName, setNewName] = useState('');
   const [newIcon, setNewIcon] = useState('🎹');
@@ -58,6 +73,73 @@ export function HabitLogger() {
   };
 
   useEffect(() => { load(); }, []);
+
+  // 恢复上次未停止的计时（刷新/跳转回来仍继续计时）
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(TIMER_KEY);
+      if (raw) {
+        const r = JSON.parse(raw);
+        if (r && r.habitId && r.startAt) {
+          setRunning(r);
+          setNow(Date.now());
+        }
+      }
+    } catch { /* localStorage 不可用时忽略 */ }
+  }, []);
+
+  // 运行中才每秒跳一次，避免无谓重渲染
+  useEffect(() => {
+    if (!running) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [running]);
+
+  const startTimer = () => {
+    if (!habitId) { setMessage({ text: '请先选择习惯再开始计时', type: 'err' }); return; }
+    if (running) { setMessage({ text: '已有进行中的计时，请先停止', type: 'err' }); return; }
+    const h = habits.find(x => x.id === habitId);
+    if (!h) { setMessage({ text: '找不到该习惯', type: 'err' }); return; }
+    const r = { habitId, name: h.name, icon: h.icon || '🎯', startAt: new Date().toISOString() };
+    setRunning(r);
+    setNow(Date.now());
+    try { localStorage.setItem(TIMER_KEY, JSON.stringify(r)); } catch { /* 忽略 */ }
+    setMessage({ text: `⏱ 开始记录「${h.name}」，练完点「停止并记录」`, type: 'ok' });
+  };
+
+  const stopTimer = async () => {
+    if (!running) return;
+    const ms = Math.max(0, now - new Date(running.startAt).getTime());
+    // 四舍五入到分钟；不足 1 分钟按 1 分钟记（DB 有 duration_min > 0 约束）
+    const mins = Math.max(1, Math.round(ms / 60000));
+    setRunning(null);
+    setNow(Date.now());
+    try { localStorage.removeItem(TIMER_KEY); } catch { /* 忽略 */ }
+    const { error } = await supabase.from('habit_sessions').insert({
+      habit_id: running.habitId,
+      start_at: running.startAt,
+      duration_min: mins,
+      note: note.trim() || null,
+    });
+    if (error) {
+      setMessage({ text: `❌ 保存失败: ${error.message}（计时已停止，可手动补录）`, type: 'err' });
+      return;
+    }
+    setMessage({ text: `✅ 已记录「${running.name}」${fmtHM(mins)}`, type: 'ok' });
+    setDuration('');
+    setNote('');
+    load();
+  };
+
+  /** 放弃计时（点错了起手时用），不落库 */
+  const discardTimer = () => {
+    if (!running) return;
+    if (!confirm(`放弃这次「${running.name}」计时？本次不会记录。`)) return;
+    setRunning(null);
+    try { localStorage.removeItem(TIMER_KEY); } catch { /* 忽略 */ }
+    setMessage({ text: '已放弃本次计时', type: 'ok' });
+  };
 
   // 每个习惯的汇总
   const perHabit = useMemo(() => {
@@ -176,6 +258,56 @@ export function HabitLogger() {
             );
           })}
         </div>
+      </div>
+
+      {/* 计时器：开始 / 停止 */}
+      <div style={S.section}>
+        <div style={S.sectionHeader}>
+          <span style={S.sectionTitle}>⏱ 计时记录</span>
+          <span style={{ fontSize: 11, color: '#52525b' }}>
+            {running ? '计时中，状态全局保留（刷新/跳页都不会丢）' : '开始后去练，练完点停止自动算时长'}
+          </span>
+        </div>
+        {!running ? (
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button onClick={startTimer} disabled={loading}
+              style={{ ...S.saveBtn, fontSize: 14, padding: '12px 22px' }}>
+              ▶ 开始记录当前时间
+            </button>
+            <span style={{ fontSize: 12, color: '#71717a' }}>
+              将记录到：{habits.find(h => h.id === habitId)
+                ? `${habits.find(h => h.id === habitId)!.icon} ${habits.find(h => h.id === habitId)!.name}`
+                : '（先在下方选择习惯）'}
+            </span>
+          </div>
+        ) : (
+          <div style={S.timerBox}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 18 }}>{running.icon}</span>
+              <span style={{ fontSize: 14, fontWeight: 600, color: '#e4e4e7' }}>{running.name}</span>
+              <span style={{
+                fontSize: 26, fontWeight: 800, color: '#fbbf24', fontFamily: 'monospace',
+                letterSpacing: 1,
+              }}>
+                {fmtElapsed(now - new Date(running.startAt).getTime())}
+              </span>
+            </div>
+            <div style={{ fontSize: 11, color: '#71717a', marginTop: 2 }}>
+              开始于 {localDateStr(new Date(running.startAt))} {new Date(running.startAt).toTimeString().slice(0, 5)}
+              （{now - new Date(running.startAt).getTime() >= 60000
+                ? `停止后约记 ${fmtHM(Math.max(1, Math.round((now - new Date(running.startAt).getTime()) / 60000)))}`
+                : '不足 1 分钟，将按 1 分钟记'}）
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+              <button onClick={stopTimer} disabled={loading}
+                style={{ ...S.saveBtn, fontSize: 14, padding: '10px 20px', background: '#16a34a' }}>
+                ⏹ 停止并记录
+              </button>
+              <button onClick={discardTimer}
+                style={{ ...S.saveBtn, background: '#52525b' }}>放弃</button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 录入 / 编辑 */}
@@ -338,4 +470,5 @@ S.privacyBtn = { background: 'none', border: 'none', cursor: 'pointer', fontSize
 S.statCard = { flex: '1 1 130px', maxWidth: 180, padding: '14px', borderRadius: 12, border: '1px solid', background: '#121224', textAlign: 'center' };
 S.logRow = { display: 'flex', alignItems: 'center', gap: 12, padding: '8px 14px', borderRadius: 8, background: '#121224' };
 S.rowBtn = { background: 'rgba(99,102,241,0.15)', border: 'none', fontSize: 11, cursor: 'pointer', padding: '2px 8px', borderRadius: 4 };
+S.timerBox = { padding: '16px 18px', borderRadius: 12, background: '#121224', border: '1px solid #3a3a2a' };
 S.pageBtn = { padding: '6px 14px', borderRadius: 8, border: '1px solid #2a2a40', background: '#121224', color: '#a1a1aa', cursor: 'pointer', fontSize: 12 };

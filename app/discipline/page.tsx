@@ -12,7 +12,7 @@ import {
 const COL_W = 56;
 const TIME_AXIS_W = 52;
 const TOP_PAD = 24;
-const BOT_PAD = 40;
+const BOT_PAD = 52;   // 留出「名称 / 时长 / 日期」三行轴标注的空间
 const SVG_H = 560;
 
 export default function DisciplinePage() {
@@ -71,6 +71,8 @@ export default function DisciplinePage() {
   const svgW = Math.max(days.length * COL_W + 64, 400);
   const plotH = SVG_H - TOP_PAD - BOT_PAD;
   const accent = active?.color || '#6366f1';
+  // 柱下标注要塞进 56px 宽的列里，习惯名截断到 4 个字
+  const shortName = (active?.name || '').length > 4 ? (active?.name || '').slice(0, 4) : (active?.name || '');
 
   const hrToY = useCallback((hr: number) => {
     return TOP_PAD + ((hr - axis.startHr) / axis.hrs) * plotH;
@@ -227,8 +229,18 @@ export default function DisciplinePage() {
                       );
                     })}
 
-                    <text x={i * COL_W + COL_W / 2} y={SVG_H - 12} textAnchor="middle"
-                      fontSize={isHighlight ? 11 : 9} fontWeight={isHighlight ? 700 : 500}
+                    {/* 柱下标注：这是什么 + 当天时长（对齐 /events 的"柱体 + 轴标签"观感） */}
+                    <text x={i * COL_W + COL_W / 2} y={SVG_H - 34} textAnchor="middle"
+                      fontSize={8} fill={isDim ? '#3f3f46' : '#71717a'}>
+                      {active?.icon} {shortName}
+                    </text>
+                    <text x={i * COL_W + COL_W / 2} y={SVG_H - 21} textAnchor="middle"
+                      fontSize={isHighlight ? 11 : 9} fontWeight={isHighlight ? 700 : 600}
+                      fill={isDim ? '#3f3f46' : isHover ? '#e4e4e7' : accent}>
+                      {d.totalMin ? fmtHM(d.totalMin) : '—'}
+                    </text>
+                    <text x={i * COL_W + COL_W / 2} y={SVG_H - 8} textAnchor="middle"
+                      fontSize={isHighlight ? 10 : 9} fontWeight={isHighlight ? 700 : 500}
                       fill={isHighlight ? accent : isHover ? '#c4c4cf' : '#52525b'}>
                       {d.day.slice(5)}
                     </text>
@@ -251,6 +263,35 @@ export default function DisciplinePage() {
                   stroke="#f59e0b" strokeWidth={1.5} strokeDasharray="4 3" opacity={0.5} />;
               })()}
             </svg>
+          </div>
+
+          {/* 图例：说明每种颜色是什么 + 累计时长（对齐 /events 的底部统计卡） */}
+          <div style={S.legendBar}>
+            {habits.map(h => {
+              const on = h.id === activeId;
+              const st = on ? stats : null;
+              return (
+                <div key={h.id} style={{
+                  ...S.legendItem,
+                  borderColor: on ? (h.color || '#6366f1') : '#1e1e32',
+                  opacity: on ? 1 : 0.55,
+                }}>
+                  <span style={{
+                    display: 'inline-block', width: 12, height: 12, borderRadius: 3,
+                    background: h.color || '#6366f1',
+                    boxShadow: `0 0 6px ${h.color || '#6366f1'}44`,
+                  }} />
+                  <span style={{ fontSize: 12, color: on ? '#e4e4e7' : '#a1a1aa' }}>
+                    {h.icon} {h.name}
+                  </span>
+                  {st && (
+                    <span style={{ fontSize: 11, color: '#818cf8', fontWeight: 600 }}>
+                      合计 {fmtHM(st.totalMin)} · {st.count} 次 · 连续 {st.streak} 天
+                    </span>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -296,6 +337,8 @@ const S = {
   chartOuter: { borderRadius: 18, border: '1px solid #1e1e32', background: '#08081a', marginBottom: 32, overflow: 'hidden' } as React.CSSProperties,
   timeAxisCol: { float: 'left', width: TIME_AXIS_W, height: SVG_H + 20, position: 'relative' as const, zIndex: 2, background: '#08081a', borderRight: '1px solid #1e1e32' } as React.CSSProperties,
   chartScroll: { overflowX: 'auto', overflowY: 'hidden', height: SVG_H + 20, marginLeft: TIME_AXIS_W, paddingBottom: 20 } as React.CSSProperties,
+  legendBar: { display: 'flex', gap: 12, flexWrap: 'wrap', padding: '12px 20px 14px', marginLeft: TIME_AXIS_W, fontSize: 11, color: '#a1a1aa', borderTop: '1px solid #1e1e32', background: '#08081a' } as React.CSSProperties,
+  legendItem: { display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', borderRadius: 10, border: '1px solid #1e1e32', background: '#0e0e1e' } as React.CSSProperties,
   empty: { textAlign: 'center', color: '#52525b', fontSize: 13, padding: 56, lineHeight: 1.5 } as React.CSSProperties,
   tooltip: { position: 'fixed', background: '#181830', border: '1px solid #333355', borderRadius: 12, padding: '10px 14px', fontSize: 12, color: '#e4e4e7', pointerEvents: 'none', zIndex: 9999, boxShadow: '0 8px 36px rgba(0,0,0,0.55)', lineHeight: 1.6, maxWidth: 260 } as React.CSSProperties,
 };
